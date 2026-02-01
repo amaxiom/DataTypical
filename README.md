@@ -287,7 +287,7 @@ If you use DataTypical in your research, please cite:
   author = {Barnard, Amanda S.},
   title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
   year = {2026},
-  url = {https://github.com/amaxiom/datatypical},
+  url = {https://github.com/amaxiom/DataTypical},
   version = {0.7}
 }
 ```
@@ -351,8 +351,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## Support
 
 - **Documentation**: See docs/ folder or links above
-- **Issues**: Report bugs via [GitHub Issues](https://github.com/amaxiom/datatypical/issues)
-- **Questions**: Open a [GitHub Discussion](https://github.com/amaxiom/datatypical/discussions)
+- **Issues**: Report bugs via [GitHub Issues](https://github.com/amaxiom/DataTypical/issues)
+- **Questions**: Open a [GitHub Discussion](https://github.com/amaxiom/DataTypical/discussions)
 
 ---
 
@@ -370,12 +370,12 @@ Special thanks to the scientific Python community.
 
 ## Quick Links
 
-[Documentation](https://github.com/amaxiom/datatypical/docs)  
+[Documentation](https://github.com/amaxiom/DataTypical/docs)  
 [Quick Start](#quick-start)  
 [Examples](EXAMPLES.md)  
 [Visualization Guide](VISUALIZATION_GUIDE.md)  
-[Report Issues](https://github.com/amaxiom/datatypical/issues)  
-[Discussions](https://github.com/amaxiom/datatypical/discussions)
+[Report Issues](https://github.com/amaxiom/DataTypical/issues)  
+[Discussions](https://github.com/amaxiom/DataTypical/discussions)
 
 ---
 
