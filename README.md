@@ -5,7 +5,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-DataTypical analyzes datasets through three complementary lenses—archetypal (extreme), prototypical (representative), and stereotypical (target-like), with Shapley value explanations revealing why instances matter and which ones create your dataset's structure.
+DataTypical analyzes datasets through three complementary lenses: archetypal (extreme), prototypical (representative), and stereotypical (target-like), with Shapley value explanations revealing why instances matter and which ones create your dataset's structure.
 
 ---
 
@@ -84,7 +84,7 @@ When `shapley_mode=True`, DataTypical reveals two views:
   Gap     │  Critical
   Fillers │  (irreplaceable)
 ──────────┼──────────────── Actual High
-  Redundant│ Replaceable
+Redundant │ Replaceable
           │  (keep one)
      Formative Low
 ```
@@ -371,12 +371,12 @@ Special thanks to the scientific Python community.
 
 ## Quick Links
 
-📖 [Documentation](https://github.com/amaxiom/datatypical/docs)  
-🚀 [Quick Start](#quick-start)  
-💡 [Examples](EXAMPLES.md)  
-📊 [Visualization Guide](VISUALIZATION_GUIDE.md)  
-🐛 [Report Issues](https://github.com/amaxiom/datatypical/issues)  
-💬 [Discussions](https://github.com/amaxiom/datatypical/discussions)
+[Documentation](https://github.com/amaxiom/datatypical/docs)  
+[Quick Start](#quick-start)  
+[Examples](EXAMPLES.md)  
+[Visualization Guide](VISUALIZATION_GUIDE.md)  
+[Report Issues](https://github.com/amaxiom/datatypical/issues)  
+[Discussions](https://github.com/amaxiom/datatypical/discussions)
 
 ---
 
