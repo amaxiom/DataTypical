@@ -22,7 +22,7 @@ DataTypical analyzes datasets through three complementary lenses: archetypal (ex
 
 ## Quick Start
 
-### Installation
+### Installation ([![PyPI version](https://badge.fury.io/py/datatypical.svg)](https://pypi.org/project/datatypical/))
 
 ```bash
 pip install datatypical
