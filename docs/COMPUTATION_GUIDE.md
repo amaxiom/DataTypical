@@ -32,13 +32,15 @@ DataTypical v0.7 implements a dual-perspective significance analysis framework t
 | **Prototypical** | Representative | Coverage optimization via Facility Location |
 | **Stereotypical** | Subjective | Distance-based targeting |
 
-The key innovation in v0.6 is the addition of Shapley-based dual perspectives:
+The key innovation is the Shapley-based dual perspectives introduced in v0.6:
 
 - **Actual significance**: Samples that ARE archetypal/prototypical/stereotypical (geometric properties)
 - **Formative significance**: Samples that CREATE the archetypal/prototypical/stereotypical structure (influence-based)
 - **Explanations**: Feature-level attributions explaining WHY each sample is significant
 
-Version 0.7 introduces `fast_mode` for rapid exploration with 30x speedup versus publication-quality analysis.
+Version 0.7 introduced `fast_mode` for rapid exploration with 30x speedup versus publication-quality analysis.
+
+Version 0.7.2 replaces the ConvexHull-based archetypal formative value function with a cached archetype geometry approach. The previous ConvexHull implementation scaled as O(n^(d/2)) per permutation call, making it intractable for datasets with more than 8 features. The cached approach uses fixed archetypes from the fitted model (H_), reducing computation to O(n_archetypes x n_subset x n_features) distance arithmetic while strengthening the scientific consistency of the dual-perspective scatter plot.
 
 ---
 
@@ -610,21 +612,33 @@ Phi = marginal / n_permutations
 
 ### Value Functions
 
-**Archetypal Formative Value Function**:
+**Archetypal Formative Value Function (v0.7.2)**:
 
-Measures how much a sample expands the data boundary.
+Measures how well a sample subset supports the pre-computed archetypal geometry. Uses archetypes cached from the initial PCHA or NMF fit (stored in H_) as a fixed geometric reference.
 
 ```python
-def formative_archetypal_convex_hull(X_subset, indices, context):
-    if n_features > 20:
-        # High-D fallback: product of feature ranges
-        ranges = X_subset.max(axis=0) - X_subset.min(axis=0)
-        return np.prod(ranges + 1e-10)
-    else:
-        # Low-D: ConvexHull volume
-        hull = ConvexHull(X_subset)
-        return hull.volume
+def formative_archetypal_pcha_cached(X_subset, indices, context):
+    archetypes = context['archetypes']  # H_ from fitted model (n_archetypes, n_features)
+
+    # Pairwise distances: each archetype to each subset member
+    diffs = archetypes[:, np.newaxis, :] - X_subset[np.newaxis, :, :]
+    dists = np.sqrt((diffs ** 2).sum(axis=2))  # (n_archetypes, n_subset)
+
+    # Minimum distance from each archetype to its nearest subset member
+    min_dists = dists.min(axis=1)  # (n_archetypes,)
+
+    # Negative mean distance: higher = better coverage of archetypal corners
+    return -np.mean(min_dists)
 ```
+
+**Scientific rationale**: Both axes of the dual-perspective scatter plot now reference the same geometric model. The actual significance axis (archetypal_rank) measures how extreme each sample is relative to H_. The formative significance axis (archetypal_shapley_rank) measures how much each sample contributes to covering H_. Because both axes derive from the same fitted archetypes, the scatter plot is a true dual perspective on a single geometric model.
+
+**Computational improvement**: The previous `formative_archetypal_convex_hull` function scaled as O(n^(d/2)) per value function call due to ConvexHull computation. With 100 permutations and 312 samples, this required approximately 31,200 ConvexHull calls. In 13 dimensions, each call scales as O(n^6.5), making the total computation intractable. The cached approach replaces this with O(n_archetypes x n_subset x n_features) distance arithmetic, which is fast regardless of dimensionality.
+
+| Method | Per-call complexity | 312 samples, 13 features |
+|--------|--------------------|-----------------------------|
+| ConvexHull (v0.7) | O(n^6.5) | Days |
+| Cached archetypes (v0.7.2) | O(n_arch x n_sub x d) | Minutes |
 
 **Prototypical Formative Value Function**:
 
@@ -1090,7 +1104,7 @@ where V is value function cost.
 
 | Threshold | Value | Purpose |
 |-----------|-------|---------|
-| ConvexHull max dim | 20 | Avoid segfaults in high-D |
+| ConvexHull max dim | 20 | Avoid segfaults in high-D (archetypal fitting fallback only; not used in formative computation from v0.7.2) |
 | FAISS activation | n > 1000 | Use approximate search |
 | Parallel threshold (samples) | n >= 20 | Avoid parallelization overhead |
 | Parallel threshold (features) | d >= 10 | Avoid parallelization overhead |
@@ -1144,9 +1158,9 @@ Solutions:
 
 **Issue: "ConvexHull segfault"**
 
-Cause: High-dimensional data (> 20 features).
+Cause: High-dimensional data (> 20 features) passed to scipy ConvexHull.
 
-Solution: DataTypical automatically falls back to range-based method. If manually calling ConvexHull, check dimensions first.
+Solution: From v0.7.2, ConvexHull is no longer used in the formative Shapley computation. It is used only as an optional fallback in archetypal fitting when PCHA is unavailable and n_features <= 20. DataTypical enforces a strict dimension check before any ConvexHull call, so this should not occur in normal use.
 
 **Issue: "Memory error"**
 
