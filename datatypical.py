@@ -1,5 +1,5 @@
 """
-DataTypical v0.7 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.7.2 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
@@ -1078,6 +1078,61 @@ def formative_archetypal_convex_hull(
         return float(np.prod(ranges + 1e-10))
         
 
+def formative_archetypal_pcha_cached(
+    X_subset: np.ndarray,
+    indices: np.ndarray,
+    context: Dict
+) -> float:
+    """
+    Archetypal formative value function using cached archetype geometry.
+
+    Measures how well a subset of samples supports the pre-computed archetypal
+    geometry (PCHA or NMF archetypes stored in H_). Value equals the negative
+    mean minimum distance from each archetype to its nearest sample in the subset.
+
+    Using cached archetypes ensures that both the actual significance axis
+    (samples that ARE archetypal) and the formative significance axis (samples
+    that CREATE archetypal structure) reference the same geometric model. This
+    preserves the scientific integrity of the dual-perspective scatter plot.
+
+    Replaces formative_archetypal_convex_hull, which required ConvexHull refitting
+    on every permutation subset. ConvexHull complexity is O(n^(d/2)), making it
+    intractable for d > 8. This function uses O(n_archetypes x n_subset x n_features)
+    distance arithmetic, which is fast regardless of dimensionality.
+
+    Parameters
+    ----------
+    X_subset : np.ndarray
+        Feature matrix for samples in the current subset, shape (n_subset, n_features).
+    indices : np.ndarray
+        Indices of samples in the subset (unused, retained for API consistency).
+    context : dict
+        Must contain key 'archetypes': np.ndarray of shape (n_archetypes, n_features),
+        taken from H_ of the fitted DataTypical model.
+
+    Returns
+    -------
+    float
+        Negative mean minimum distance from each archetype to its nearest subset
+        sample. Higher (less negative) values indicate better archetypal coverage.
+    """
+    archetypes = context['archetypes']  # (n_archetypes, n_features)
+
+    if len(X_subset) < 1:
+        return 0.0
+
+    # Pairwise squared distances: (n_archetypes, n_subset)
+    # Broadcasting: archetypes (n_arch, 1, n_feat) - X_subset (1, n_sub, n_feat)
+    diffs = archetypes[:, np.newaxis, :] - X_subset[np.newaxis, :, :]
+    dists = np.sqrt((diffs ** 2).sum(axis=2))  # (n_archetypes, n_subset)
+
+    # For each archetype, find the distance to its nearest subset member
+    min_dists = dists.min(axis=1)  # (n_archetypes,)
+
+    # Negative mean distance: higher = better coverage of archetypal corners
+    return float(-np.mean(min_dists))
+    
+
 def formative_prototypical_coverage(
     X_subset: np.ndarray,
     indices: np.ndarray,
@@ -1715,168 +1770,182 @@ class DataTypical:
     # ============================================================
         
     def _fit_shapley_dual_perspective(
-        self,
-        X_scaled: ArrayLike,
-        X_l2: ArrayLike,
-        index: pd.Index
-    ) -> None:
-        """
-        Fit Shapley analysis with dual perspective:
-        1. Explanations: Why is each sample significant? (always computed)
-        2. Formative: Which samples create structure? (optional)
-        
-        MEMORY OPTIMIZED: Cleanup X_dense after Shapley computation.
-        """
-        X_dense = X_scaled.toarray() if (sp is not None and sp.isspmatrix(X_scaled)) \
-            else np.asarray(X_scaled, dtype=np.float64)
-        n_samples, n_features = X_dense.shape
-        
-        # Determine if we compute formative
-        compute_formative = self.shapley_compute_formative if self.shapley_compute_formative is not None else True
-        
-        # SUBSAMPLE LOGIC: Only for explanations
-        subsample_indices_explanations = None
-        
-        if self.shapley_top_n is not None:
-            # Support both fraction and absolute count
-            if isinstance(self.shapley_top_n, float) and 0 < self.shapley_top_n < 1:
-                n_subsample = max(1, int(self.shapley_top_n * n_samples))
-            else:
-                n_subsample = int(self.shapley_top_n)
-            
-            if n_subsample < n_samples:
+            self,
+            X_scaled: ArrayLike,
+            X_l2: ArrayLike,
+            index: pd.Index
+        ) -> None:
+            """
+            Fit Shapley analysis with dual perspective:
+            1. Explanations: Why is each sample significant? (always computed)
+            2. Formative: Which samples create structure? (optional)
+    
+            v0.7.2: Archetypal formative computation now uses cached archetype geometry
+            (self.H_) instead of refitting ConvexHull or PCHA on every permutation
+            subset. This resolves intractable runtimes on datasets with more than 8
+            features while preserving scientific consistency between the two axes of
+            the dual-perspective scatter plot.
+    
+            MEMORY OPTIMIZED: Cleanup X_dense after Shapley computation.
+            """
+            X_dense = X_scaled.toarray() if (sp is not None and sp.isspmatrix(X_scaled)) \
+                else np.asarray(X_scaled, dtype=np.float64)
+            n_samples, n_features = X_dense.shape
+    
+            # Determine if we compute formative
+            compute_formative = self.shapley_compute_formative if self.shapley_compute_formative is not None else True
+    
+            # SUBSAMPLE LOGIC: Only for explanations
+            subsample_indices_explanations = None
+    
+            if self.shapley_top_n is not None:
+                # Support both fraction and absolute count
+                if isinstance(self.shapley_top_n, float) and 0 < self.shapley_top_n < 1:
+                    n_subsample = max(1, int(self.shapley_top_n * n_samples))
+                else:
+                    n_subsample = int(self.shapley_top_n)
+    
+                if n_subsample < n_samples:
+                    if self.verbose:
+                        print(f"\n[Subsampling] Selecting top {n_subsample} samples per metric")
+                        if compute_formative:
+                            print("  Formative: Full dataset (required for structure)")
+                        else:
+                            print("  Formative: SKIPPED (fast_mode)")
+    
+                    # Get correct stereotype source for ranking
+                    stereotype_source = self._stereotype_source_fit_ if hasattr(self, '_stereotype_source_fit_') else None
+                    temp_results = self._score_with_fitted(X_scaled, X_l2, index, stereotype_source)
+    
+                    # Get top n_subsample for each metric separately
+                    top_arch = set(temp_results.nlargest(n_subsample, 'archetypal_rank').index)
+                    top_proto = set(temp_results.nlargest(n_subsample, 'prototypical_rank').index)
+                    top_stereo = set(temp_results.nlargest(n_subsample, 'stereotypical_rank').index)
+    
+                    # Union of all top samples - NO TRIMMING
+                    # Ensures all top-N samples from each metric have Shapley values
+                    top_indices_union = top_arch | top_proto | top_stereo
+    
+                    if self.verbose:
+                        print(f"    Top {n_subsample} archetypal samples: {len(top_arch)}")
+                        print(f"    Top {n_subsample} prototypical samples: {len(top_proto)}")
+                        print(f"    Top {n_subsample} stereotypical samples: {len(top_stereo)}")
+                        print(f"    Union: {len(top_indices_union)} unique samples")
+                        print(f"    (Computing Shapley for all union samples - ensures no empty plots)")
+    
+                    # Identify core samples (appear in multiple metric top-N lists)
+                    # Core samples get full permutations; secondary get reduced permutations
+                    sample_counts = {}
+                    for idx in top_indices_union:
+                        count = sum([idx in top_arch, idx in top_proto, idx in top_stereo])
+                        sample_counts[idx] = count
+    
+                    # Core = samples in 2+ metrics (most important)
+                    core_samples_df_idx = [idx for idx, cnt in sample_counts.items() if cnt >= 2]
+                    core_positions = sorted([index.get_loc(idx) for idx in core_samples_df_idx])
+                    self._union_core_samples = np.array(core_positions)
+    
+                    if self.verbose:
+                        print(f"    Core samples (in 2+ metrics): {len(core_samples_df_idx)}")
+                        print(f"    Secondary samples (in 1 metric): {len(top_indices_union) - len(core_samples_df_idx)}")
+    
+                    # Convert to positional indices (deterministic order via sorting)
+                    top_positions = sorted([index.get_loc(idx) for idx in top_indices_union])
+                    subsample_indices_explanations = np.array(top_positions)
+    
+                    # MEMORY CLEANUP
+                    _cleanup_memory(temp_results)
+    
+            # Initialize Shapley engine
+            engine = ShapleySignificanceEngine(
+                n_permutations=self.shapley_n_permutations,
+                random_state=self.random_state,
+                n_jobs=self.n_jobs,
+                early_stopping_patience=self.shapley_early_stopping_patience,
+                early_stopping_tolerance=self.shapley_early_stopping_tolerance,
+                verbose=self.verbose
+            )
+    
+            # PERSPECTIVE 1: Formative Instances (optional)
+            if compute_formative:
                 if self.verbose:
-                    print(f"\n[Subsampling] Selecting top {n_subsample} samples per metric")
-                    if compute_formative:
-                        print("  Formative: Full dataset (required for structure)")
-                    else:
-                        print("  Formative: SKIPPED (fast_mode)")
-                
-                # Get correct stereotype source for ranking
-                stereotype_source = self._stereotype_source_fit_ if hasattr(self, '_stereotype_source_fit_') else None
-                temp_results = self._score_with_fitted(X_scaled, X_l2, index, stereotype_source)
-                
-                # Get top n_subsample for each metric separately
-                top_arch = set(temp_results.nlargest(n_subsample, 'archetypal_rank').index)
-                top_proto = set(temp_results.nlargest(n_subsample, 'prototypical_rank').index)
-                top_stereo = set(temp_results.nlargest(n_subsample, 'stereotypical_rank').index)
-                
-                # Union of all top samples - NO TRIMMING!
-                # This ensures all top-N samples from each metric have Shapley values
-                top_indices_union = top_arch | top_proto | top_stereo
-                
-                if self.verbose:
-                    print(f"    Top {n_subsample} archetypal samples: {len(top_arch)}")
-                    print(f"    Top {n_subsample} prototypical samples: {len(top_proto)}")
-                    print(f"    Top {n_subsample} stereotypical samples: {len(top_stereo)}")
-                    print(f"    Union: {len(top_indices_union)} unique samples")
-                    print(f"    (Computing Shapley for all union samples - ensures no empty plots)")
-                
-                # Identify core samples (appear in multiple metric top-N lists)
-                # These get full permutations; secondary samples get reduced permutations
-                sample_counts = {}
-                for idx in top_indices_union:
-                    count = sum([idx in top_arch, idx in top_proto, idx in top_stereo])
-                    sample_counts[idx] = count
-                
-                # Core = samples in 2+ metrics (most important)
-                core_samples_df_idx = [idx for idx, cnt in sample_counts.items() if cnt >= 2]
-                core_positions = sorted([index.get_loc(idx) for idx in core_samples_df_idx])
-                self._union_core_samples = np.array(core_positions)
-                
-                if self.verbose:
-                    print(f"    Core samples (in 2+ metrics): {len(core_samples_df_idx)}")
-                    print(f"    Secondary samples (in 1 metric): {len(top_indices_union) - len(core_samples_df_idx)}")
-                    
-                # Convert to positional indices (deterministic order via sorting)
-                top_positions = sorted([index.get_loc(idx) for idx in top_indices_union])
-                subsample_indices_explanations = np.array(top_positions)
-                
-                # MEMORY CLEANUP
-                _cleanup_memory(temp_results)
-        
-        # Initialize Shapley engine
-        engine = ShapleySignificanceEngine(
-            n_permutations=self.shapley_n_permutations,
-            random_state=self.random_state,
-            n_jobs=self.n_jobs,
-            early_stopping_patience=self.shapley_early_stopping_patience,
-            early_stopping_tolerance=self.shapley_early_stopping_tolerance,
-            verbose=self.verbose
-        )
-        
-        # PERSPECTIVE 1: Formative Instances (optional)
-        if compute_formative:
-            if self.verbose:
-                print("\n[1] Computing Formative Instances (global perspective)...")
-                print("    Using FULL dataset (required to measure structure)")
-            
-            # Formative archetypal (convex hull)
-            self.Phi_archetypal_formative_, self.shapley_info_['archetypal_formative'] = \
-                engine.compute_shapley_values(
-                    X_dense,  # Always full dataset
-                    formative_archetypal_convex_hull,
-                    "Archetypal Formative (Convex Hull)"
-                )
-            
-            # Formative prototypical (coverage)
-            self.Phi_prototypical_formative_, self.shapley_info_['prototypical_formative'] = \
-                engine.compute_shapley_values(
-                    X_dense,
-                    formative_prototypical_coverage,
-                    "Prototypical Formative (Coverage)"
-                )
-            
-            # Formative stereotypical (extremeness)
-            if self.stereotype_column is not None and hasattr(self, '_stereotype_source_fit_'):
-                target_values = self._stereotype_source_fit_.to_numpy(dtype=np.float64)
-                context = {
-                    'target_values': target_values,
-                    'target': self.stereotype_target,
-                    'median': np.median(target_values)
-                }
-                
-                self.Phi_stereotypical_formative_, self.shapley_info_['stereotypical_formative'] = \
+                    print("\n[1] Computing Formative Instances (global perspective)...")
+                    print("    Using FULL dataset (required to measure structure)")
+    
+                # Formative archetypal: uses cached archetypes (self.H_) as geometric reference.
+                # Both actual ranks (from self.H_) and formative Shapley values now reference
+                # the same fitted archetypal geometry, ensuring dual-perspective consistency.
+                # This replaces the ConvexHull approach which was O(n^(d/2)) per call and
+                # intractable for datasets with more than 8 features.
+                context_archetypal = {'archetypes': self.H_.astype(np.float64)}
+                self.Phi_archetypal_formative_, self.shapley_info_['archetypal_formative'] = \
                     engine.compute_shapley_values(
                         X_dense,
-                        formative_stereotypical_extremeness,
-                        "Stereotypical Formative (Extremeness)",
-                        context
+                        formative_archetypal_pcha_cached,
+                        "Archetypal Formative (Cached Archetypes)",
+                        context_archetypal
                     )
+                # MEMORY CLEANUP: Free archetypal context
+                _cleanup_memory(context_archetypal)
+    
+                # Formative prototypical (coverage)
+                self.Phi_prototypical_formative_, self.shapley_info_['prototypical_formative'] = \
+                    engine.compute_shapley_values(
+                        X_dense,
+                        formative_prototypical_coverage,
+                        "Prototypical Formative (Coverage)"
+                    )
+    
+                # Formative stereotypical (extremeness)
+                if self.stereotype_column is not None and hasattr(self, '_stereotype_source_fit_'):
+                    target_values = self._stereotype_source_fit_.to_numpy(dtype=np.float64)
+                    context = {
+                        'target_values': target_values,
+                        'target': self.stereotype_target,
+                        'median': np.median(target_values)
+                    }
+    
+                    self.Phi_stereotypical_formative_, self.shapley_info_['stereotypical_formative'] = \
+                        engine.compute_shapley_values(
+                            X_dense,
+                            formative_stereotypical_extremeness,
+                            "Stereotypical Formative (Extremeness)",
+                            context
+                        )
+                else:
+                    self.Phi_stereotypical_formative_ = None
             else:
+                # Skip formative computation (fast_mode)
+                if self.verbose:
+                    print("\n[1] Skipping Formative Instances (fast_mode)")
+    
+                self.Phi_archetypal_formative_ = None
+                self.Phi_prototypical_formative_ = None
                 self.Phi_stereotypical_formative_ = None
-        else:
-            # Skip formative computation
+    
+            # PERSPECTIVE 2: Explanations (always computed, optionally subsampled)
             if self.verbose:
-                print("\n[1] Skipping Formative Instances (fast_mode)")
-            
-            self.Phi_archetypal_formative_ = None
-            self.Phi_prototypical_formative_ = None
-            self.Phi_stereotypical_formative_ = None
-        
-        # PERSPECTIVE 2: Explanations (always computed, optionally subsampled)
-        if self.verbose:
-            print("\n[2] Computing Local Explanations (why is each sample significant)...")
-            if subsample_indices_explanations is not None:
-                print(f"    Computing for {len(subsample_indices_explanations)} samples (union of top-N per metric)")
-            else:
-                print(f"    Computing for all {n_samples} instances")
-        
-        self._fit_shapley_explanations(
-            X_dense, X_l2, index, engine,
-            subsample_indices_explanations
-        )
-        
-        # MEMORY CLEANUP: Free X_dense copy (original X_scaled still needed)
-        _cleanup_memory(X_dense, force_gc=True)
-        
-        if self.verbose:
-            print("\n" + "="*70)
-            if compute_formative:
-                print("✓ Shapley Dual-Perspective Analysis Complete")
-            else:
-                print("✓ Shapley Explanations Complete (formative skipped)")
-            print("="*70)
+                print("\n[2] Computing Local Explanations (why is each sample significant)...")
+                if subsample_indices_explanations is not None:
+                    print(f"    Computing for {len(subsample_indices_explanations)} samples (union of top-N per metric)")
+                else:
+                    print(f"    Computing for all {n_samples} instances")
+    
+            self._fit_shapley_explanations(
+                X_dense, X_l2, index, engine,
+                subsample_indices_explanations
+            )
+    
+            # MEMORY CLEANUP: Free X_dense copy (original X_scaled still needed)
+            _cleanup_memory(X_dense, force_gc=True)
+    
+            if self.verbose:
+                print("\n" + "="*70)
+                if compute_formative:
+                    print("✓ Shapley Dual-Perspective Analysis Complete")
+                else:
+                    print("✓ Shapley Explanations Complete (formative skipped)")
+                print("="*70)
             
 
     def _fit_shapley_explanations(
@@ -1943,7 +2012,7 @@ class DataTypical:
         # COMPUTE CORE SAMPLES (full permutations)
         if len(core_samples) > 0:
             if self.verbose:
-                print(f"  Computing archetypal explanations (core: {len(core_samples)} samples)...")
+                print(f"  Computing explanations for significance rankings...")
             
             X_core = X_dense[core_samples, :]
             Phi_arch_core, info_arch = engine.compute_feature_shapley_values(
