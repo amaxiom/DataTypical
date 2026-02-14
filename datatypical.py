@@ -1,5 +1,5 @@
 """
-DataTypical v0.7.2 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.7.3 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
