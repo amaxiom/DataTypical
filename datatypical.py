@@ -9,7 +9,7 @@ Key Innovation:
 - Formative instances: Samples that MAKE the dataset archetypal/prototypical/stereotypical (Shapley)
 - Local explanations: WHY each sample is significant (feature attributions)
 
-Two complementary perspectives:
+Two complementary perspectivesF:
 1. LOCAL: "This sample IS significant because features X, Y contribute most"
 2. GLOBAL: "This sample CREATES significance by defining the distribution and boundary"
 
@@ -2750,7 +2750,7 @@ class DataTypical:
     # ============================================================
     # Internals - Tables (numeric-only features)
     # ============================================================
-def _select_numeric_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _select_numeric_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Select numeric feature columns, excluding ID-like and non-informative columns.
         
