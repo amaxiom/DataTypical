@@ -723,6 +723,7 @@ def profile_plot(
     sample_idx: int,
     significance: str = 'archetypal',
     order: str = 'local',
+    top_features: Optional[int] = None,
     figsize: Tuple[int, int] = (12, 5),
     cmap: str = 'viridis',
     title: Optional[str] = None,
@@ -736,6 +737,11 @@ def profile_plot(
     the normalized feature value for this sample. Features can be ordered locally (by
     this sample's importance) or globally (by average importance across all samples).
     
+    Missingness Indicator: Features that had missing values in the original data
+    appear as colorless (transparent) bars, while observed features are colored. This
+    preserves the signal that imputation was used and distinguishes real from imputed data.
+    Bar height (Shapley value) is always shown regardless of missingness.
+    
     Parameters
     ----------
     dt_fitted : DataTypical
@@ -748,6 +754,9 @@ def profile_plot(
         Feature ordering method: 'local' or 'global'
         'local': Order by this sample's Shapley values
         'global': Order by average importance across all samples (uses explanations)
+    top_features : int, optional
+        Number of top features to display. If None, shows all features.
+        Features are selected after ordering (top N by importance).
     figsize : tuple of int
         Figure size (width, height)
     cmap : str
@@ -776,6 +785,10 @@ def profile_plot(
     >>> # Profile top formative sample (global ordering)
     >>> top_formative = results['archetypal_shapley_rank'].idxmax()
     >>> ax = profile_plot(dt, top_formative, significance='archetypal', order='global')
+    >>> 
+    >>> # Show only top 15 most important features
+    >>> ax = profile_plot(dt, top_idx, significance='archetypal', 
+    ...                   order='local', top_features=15)
     """
     
     if not dt_fitted.shapley_mode:
@@ -843,6 +856,18 @@ def profile_plot(
     # Sort by same order as Shapley values
     normalized_sorted = normalized_values[sorted_idx]
     
+    # Apply top_features filter if specified
+    if top_features is not None:
+        if top_features < 1:
+            raise ValueError(f"top_features must be >= 1, got {top_features}")
+        
+        n_features = len(features_sorted)
+        if top_features < n_features:
+            # Slice to keep only top N features
+            shapley_sorted = shapley_sorted[:top_features]
+            features_sorted = features_sorted[:top_features]
+            normalized_sorted = normalized_sorted[:top_features]
+    
     # Create figure if needed
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -868,12 +893,13 @@ def profile_plot(
     ax.set_xticks(x_pos)
     ax.set_xticklabels(features_sorted, rotation=90, ha='center', fontsize=12)
     
-    # Update xlabel based on ordering type
-    if ordering_type == "local":
-        ax.set_xlabel('Features (Ordered by Local Importance)', fontsize=14)
-    else:  # global
-        ax.set_xlabel('Features (Ordered by Global Importance)', fontsize=14)
+    # Update xlabel based on ordering type and top_features
+    if top_features is not None:
+        feature_label = f'Top {top_features} Features (Ordered by {ordering_type.capitalize()} Importance)'
+    else:
+        feature_label = f'Features (Ordered by {ordering_type.capitalize()} Importance)'
     
+    ax.set_xlabel(feature_label, fontsize=14)
     ax.set_ylabel('Shapley Value', fontsize=14)
     
     if title:
@@ -898,7 +924,6 @@ def profile_plot(
     plt.tight_layout()
     
     return ax
-
 
 # ============================================================================
 # Export
