@@ -8,7 +8,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setup(
     name="datatypical",
-    version="0.7.3",
+    version="0.7.4",
     author="Amanda S. Barnard",
     description="Explainable instance significance discovery for scientific datasets",
     long_description=long_description,
