@@ -1,5 +1,5 @@
 """
-DataTypical v0.7.3 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.7.4 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
@@ -2767,14 +2767,15 @@ class DataTypical:
             nunique = series.nunique()
             
             # Exclude columns with ID-like names
-            col_lower = col.lower()
-            if (col_lower == 'id' or
-                col_lower.endswith('_id') or
-                col_lower.startswith('id_')):
-                to_drop.add(col)
-                if self.verbose:
-                    print(f"  Dropping ID-like column: '{col}'")
-                continue
+            if isinstance(col, str):
+                col_lower = col.lower()
+                if (col_lower == 'id' or
+                    col_lower.endswith('_id') or
+                    col_lower.startswith('id_')):
+                    to_drop.add(col)
+                    if self.verbose:
+                        print(f"  Dropping ID-like column: '{col}'")
+                    continue
             
             # Exclude strictly monotonic columns (likely row indices)
             if nunique == n:
