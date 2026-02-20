@@ -291,7 +291,8 @@ If you use DataTypical in your research, please cite:
   title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
   year = {2026},
   url = {https://github.com/amaxiom/DataTypical},
-  version = {0.7}
+  version = {0.7},
+  doi={10.5281/zenodo.18666410}
 }
 ```
 
