@@ -1,5 +1,5 @@
 """
-DataTypical v0.7.4 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.7.5 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
@@ -9,7 +9,7 @@ Key Innovation:
 - Formative instances: Samples that MAKE the dataset archetypal/prototypical/stereotypical (Shapley)
 - Local explanations: WHY each sample is significant (feature attributions)
 
-Two complementary perspectivesF:
+Two complementary perspectives:
 1. LOCAL: "This sample IS significant because features X, Y contribute most"
 2. GLOBAL: "This sample CREATES significance by defining the distribution and boundary"
 
@@ -767,7 +767,7 @@ class ShapleySignificanceEngine:
         shapley_sum = np.zeros((n_samples, n_features), dtype=np.float64)
         n_perms_used = 0
         
-        batch_size = max(1, self.n_permutations // 10)
+        batch_size = 10
         info = {'converged': False, 'mean_rel_change': 0.0}
         
         # OPTIMIZED: Decide parallelization strategy based on data size
@@ -883,7 +883,7 @@ class ShapleySignificanceEngine:
         shapley_sum = np.zeros((n_samples, n_features), dtype=np.float64)
         n_perms_used = 0
         
-        batch_size = max(1, self.n_permutations // 10)
+        batch_size = 10
         info = {'converged': False, 'mean_rel_change': 0.0}
         
         # OPTIMIZED: Decide parallelization strategy
