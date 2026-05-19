@@ -5,8 +5,6 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/datatypical.svg)](https://pypi.org/project/datatypical/)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18666410.svg)](https://doi.org/10.5281/zenodo.18666410)
-
 
 DataTypical analyzes datasets through three complementary lenses: archetypal (extreme), prototypical (representative), and stereotypical (target-like), with Shapley value explanations revealing why instances matter and which ones create your dataset's structure.
 
@@ -14,12 +12,12 @@ DataTypical analyzes datasets through three complementary lenses: archetypal (ex
 
 ## Key Features
 
-**Three Significance Types**: Archetypal, prototypical, stereotypical (all computed simultaneously)
-**Shapley Explanations**: Feature-level attributions for why samples are significant  
-**Formative Discovery**: Distinguish samples that ARE significant from those that CREATE structure  
-**Publication Visualizations**: Dual-perspective scatter plots, heatmaps, and profile plots  
-**Multi-Modal Support**: Tabular data, text, and graph networks through unified API  
-**Performance Optimized**: Fast exploration mode and efficient Shapley computation  
+- **Three Significance Types**: Archetypal, prototypical, stereotypical (all computed simultaneously, or selectively)
+- **Shapley Explanations**: Feature-level attributions for why samples are significant
+- **Formative Discovery**: Distinguish samples that ARE significant from those that CREATE structure
+- **Publication Visualizations**: Dual-perspective scatter plots, heatmaps, and profile plots
+- **Multi-Modal Support**: Tabular data, text, and graph networks through unified API
+- **Performance Optimized**: Fast exploration mode and efficient Shapley computation
 
 ---
 
@@ -155,25 +153,40 @@ for idx in critical.index:
 DataTypical(
     # Enable explanations and formative analysis
     shapley_mode=False,           # True for explanations
-    
+
     # Speed vs accuracy
     fast_mode=True,               # False for publication quality
-    
+
     # Significance types
     n_archetypes=8,               # Number of extreme corners
     n_prototypes=8,               # Number of representatives
     stereotype_column=None,       # Target column for stereotypical
-    
+    stereotype_target='max',      # 'max', 'min', or numeric value
+
+    # Selective computation
+    selected_significance=None,   # 'archetypal', 'prototypical', 'stereotypical', or None (all)
+
     # Shapley optimization
     shapley_top_n=500,            # Limit explanations to top N
     shapley_n_permutations=100,   # Number of permutations (30 in fast_mode)
-    
+
     # Reproducibility
     random_state=None,            # Set for reproducible results
-    
+
     # Memory management
     max_memory_mb=8000            # Memory limit for operations
 )
+```
+
+### `selected_significance`
+
+When you only need one significance type, set `selected_significance` to skip the others entirely—saving substantial compute time:
+
+```python
+# Only compute archetypal (skip prototypical and stereotypical)
+dt = DataTypical(selected_significance='archetypal', shapley_mode=True)
+results = dt.fit_transform(data)
+# → archetypal_rank computed; prototypical_rank and stereotypical_rank are NaN
 ```
 
 ---
@@ -189,18 +202,18 @@ from datatypical_viz import significance_plot, heatmap, profile_plot
 significance_plot(results, significance='archetypal')
 
 # 2. Feature patterns: Which features matter?
-heatmap(dt, results, 
+heatmap(dt, results,
         significance='archetypal',
         order='actual',  # or 'formative'
         top_n=20)
 
 # 3. Individual explanation: Why is this sample significant?
-profile_plot(dt, sample_idx, 
+profile_plot(dt, sample_idx,
              significance='archetypal',
              order='local')  # or 'global'
 ```
 
-See [VISUALIZATION_GUIDE.md](VISUALIZATION_GUIDE.md) for detailed interpretation.
+See [docs/VISUALIZATION_GUIDE.md](docs/VISUALIZATION_GUIDE.md) for detailed interpretation.
 
 ---
 
@@ -255,16 +268,16 @@ results = dt.fit_transform(node_features, edges=edges)
 ## Documentation
 
 **New Users**:
-- [START_HERE.md](START_HERE.md) - Friendly introduction and first steps
-- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Daily reference for parameters and workflows
-- [EXAMPLES.md](EXAMPLES.md) - Complete worked examples across domains
+- [docs/START_HERE.md](docs/START_HERE.md) — Friendly introduction and first steps
+- [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) — Daily reference for parameters and workflows
+- [docs/EXAMPLES.md](docs/EXAMPLES.md) — Complete worked examples across domains
 
 **Visualization**:
-- [VISUALIZATION_GUIDE.md](VISUALIZATION_GUIDE.md) - Comprehensive guide to plots and interpretation
+- [docs/VISUALIZATION_GUIDE.md](docs/VISUALIZATION_GUIDE.md) — Comprehensive guide to plots and interpretation
 
 **Advanced**:
-- [INTERPRETATION_GUIDE.md](INTERPRETATION_GUIDE.md) - Interpreting complex patterns
-- [COMPUTATION_GUIDE.md](COMPUTATION_GUIDE.md) - Implementation details
+- [docs/INTERPRETATION_GUIDE.md](docs/INTERPRETATION_GUIDE.md) — Interpreting complex patterns
+- [docs/COMPUTATION_GUIDE.md](docs/COMPUTATION_GUIDE.md) — Implementation details and algorithms
 
 ---
 
@@ -291,8 +304,7 @@ If you use DataTypical in your research, please cite:
   title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
   year = {2026},
   url = {https://github.com/amaxiom/DataTypical},
-  version = {0.7},
-  doi={10.5281/zenodo.18666410}
+  version = {0.7.6}
 }
 ```
 
@@ -315,7 +327,7 @@ If you use DataTypical in your research, please cite:
 **Formative instances** are genuinely new. The distinction between samples that ARE significant vs samples that CREATE structure emerges from the Shapley mechanism and enables:
 
 - Redundancy detection even among significant samples
-- Finding structurally important but non-extreme samples  
+- Finding structurally important but non-extreme samples
 - Understanding irreplaceable vs interchangeable samples
 - Quality control based on structural contribution
 
@@ -325,14 +337,15 @@ This dual perspective transforms instance significance from pure ranking into ca
 
 ## Development Status
 
-**Current Version**: 0.7
+**Current Version**: 0.7.6
 
-**Recent Updates**:
-- Simplified visualization API (removed mode confusion)
-- Always-global feature ordering in heatmaps
-- Cleaned output (only rank columns)
-- Publication-ready boxed heatmaps
-- Improved memory management
+**Recent Updates (v0.7.6)**:
+- Added `selected_significance` parameter for selective computation of one significance type
+- Fixed prototype feature storage so `transform()` on new data uses correct prototype vectors
+- Full Shapley analysis (formative + explanations) now runs correctly on text data paths
+- Fixed iterator exhaustion in all text fit/transform methods
+- Fixed local/global index mismatch in stereotypical Shapley explanations when subsampling
+- Improved error messages when a significance type was not fitted
 
 **Stability**: Production-ready for research use
 
@@ -340,21 +353,15 @@ This dual perspective transforms instance significance from pure ranking into ca
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) for details.
+MIT License — See [LICENSE](LICENSE) for details.
 
-Copyright (c) 2025 Amanda S. Barnard
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
+Copyright (c) 2026 Amanda S. Barnard
 
 ---
 
 ## Support
 
-- **Documentation**: See docs/ folder or links above
+- **Documentation**: See [docs/](docs/) folder or links above
 - **Issues**: Report bugs via [GitHub Issues](https://github.com/amaxiom/DataTypical/issues)
 - **Questions**: Open a [GitHub Discussion](https://github.com/amaxiom/DataTypical/discussions)
 
@@ -374,10 +381,10 @@ Special thanks to the scientific Python community.
 
 ## Quick Links
 
-[Documentation](https://github.com/amaxiom/DataTypical/docs)  
+[Documentation](docs/)  
 [Quick Start](#quick-start)  
-[Examples](EXAMPLES.md)  
-[Visualization Guide](VISUALIZATION_GUIDE.md)  
+[Examples](docs/EXAMPLES.md)  
+[Visualization Guide](docs/VISUALIZATION_GUIDE.md)  
 [Report Issues](https://github.com/amaxiom/DataTypical/issues)  
 [Discussions](https://github.com/amaxiom/DataTypical/discussions)
 
@@ -389,5 +396,4 @@ Special thanks to the scientific Python community.
 pip install datatypical
 ```
 
-Then see [START_HERE.md](START_HERE.md) for your first analysis!
-```
+Then see [docs/START_HERE.md](docs/START_HERE.md) for your first analysis!
