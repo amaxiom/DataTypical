@@ -1,4 +1,4 @@
-# DataTypical v0.7 - Interpretation Guide
+# DataTypical v0.7.6 - Interpretation Guide
 
 ## Table of Contents
 

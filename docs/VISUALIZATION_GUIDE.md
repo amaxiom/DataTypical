@@ -1,14 +1,18 @@
 # DataTypical Visualization Guide
 
+**Version 0.7.6**
+
 ## Overview
 
-The `datatypical_viz.py` module provides publication-quality visualizations for exploring instance significance through Shapley value explanations. The module contains three complementary visualization functions that reveal **why** instances are significant and **how** they relate to dataset structure.
+The `datatypical_viz.py` module provides publication-quality visualizations for exploring instance significance through Shapley value explanations. The module contains three complementary visualization functions that reveal **why** instances are significant and **how** they relate to dataset structure, plus one helper utility.
 
 **Key Principle**: All visualizations display **explanations** (feature attributions showing why samples ARE significant), with flexible ordering options to explore different perspectives.
 
+**Note**: All three visualization functions require a **tabular** DataTypical fit. Text and graph fits do not produce `feature_columns_` or `_df_original_fit`, so calling these functions on a text/graph model raises a `RuntimeError` with a clear message.
+
 ---
 
-## The Three Visualization Functions
+## The Four Functions
 
 ### 1. `significance_plot()` - Dual-Perspective Scatter (Hero Visualization)
 
@@ -182,20 +186,11 @@ When using `order='formative'`, you may see:
 - Bars above zero: Features increasing significance
 - Bars below zero: Features decreasing significance
 
-- **Missingness Indicator**:
-- **Colored bars**: Features with observed (real) data values
-  - Color shows normalized value: purple (low) → yellow (high)
-- **Colorless/transparent bars**: Features that had missing values in original data
-  - Height shows Shapley importance based on imputed values
-  - Transparency preserves the signal that imputation was used
-  - Distinguishes real observations from model-filled values
-
-This design choice preserves data quality information: you can immediately see which feature contributions are based on actual measurements vs imputation. This is particularly important for scientific integrity and understanding the reliability of explanations.
-
 **Key Parameters**:
 - `sample_idx`: Which sample to profile (use DataFrame index from results)
 - `significance`: Which type to analyze ('archetypal', 'prototypical', 'stereotypical')
 - `order`: Feature ordering method ('local' or 'global')
+- `top_features`: Optional — show only the N most important features
 
 **Example**:
 ```python
@@ -232,6 +227,7 @@ ax = profile_plot(
 - Shows how this sample's profile compares to typical patterns
 - Use when asking: "How does this sample compare to global importance?"
 - Based on mean(|explanations|) across all samples
+- Raises `RuntimeError` if the Phi matrix for the requested significance is not available (e.g., `selected_significance` excluded it)
 
 **Reading the Plot**:
 
@@ -284,6 +280,52 @@ ax = profile_plot(
 
 ---
 
+### 4. `get_top_sample()` - Safe Rank Helper
+
+**Purpose**: Safely retrieve top sample index/indices from results, handling missing formative data gracefully (prints a helpful message instead of raising an error when the column is all NaN).
+
+**Key Parameters**:
+- `results`: Results DataFrame from `fit_transform()`
+- `rank_column`: Column to rank by (e.g., `'archetypal_rank'`, `'archetypal_shapley_rank'`)
+- `n`: Number of top samples to return (default: 1)
+- `mode`: `'max'` for highest values, `'min'` for lowest
+
+**Returns**: Single `int` if `n=1`, `list` if `n>1`, or `None` if data not available.
+
+**Example**:
+```python
+# Safe retrieval - won't crash if formative data missing
+top_idx = get_top_sample(results, 'archetypal_rank')
+top_formative = get_top_sample(results, 'archetypal_shapley_rank')  # None if not computed
+
+if top_formative is not None:
+    profile_plot(dt, top_formative, significance='archetypal', order='global')
+
+# Get top 5
+top_5 = get_top_sample(results, 'prototypical_rank', n=5)
+```
+
+---
+
+## Impact of `selected_significance` on Visualizations
+
+When fitting with `selected_significance='archetypal'` (or `'prototypical'`/`'stereotypical'`), only that significance type is computed. The Phi matrices for the other types remain `None`. This affects visualizations:
+
+- **`significance_plot()`**: Will show "Formative data not available" if the requested type was not computed
+- **`heatmap()`**: Will show "Explanations not available" message if the requested Phi is None
+- **`profile_plot()`**: Raises `RuntimeError` if the requested significance type has no explanations, or if `order='global'` is requested for a Phi that is None
+
+```python
+# Only archetypal computed
+dt = DataTypical(shapley_mode=True, selected_significance='archetypal')
+results = dt.fit_transform(data)
+
+profile_plot(dt, top_idx, significance='archetypal')   # works
+profile_plot(dt, top_idx, significance='prototypical') # RuntimeError: no explanations for 'prototypical'
+```
+
+---
+
 ## Understanding Feature Importance: Local vs Global
 
 ### In Profile Plots
@@ -322,7 +364,7 @@ ax = profile_plot(
 
 **Goal**: Understand which samples are extreme and why
 ```python
-import datatypical as dt
+from datatypical import DataTypical
 from datatypical_viz import significance_plot, heatmap, profile_plot
 
 # Fit model
@@ -396,20 +438,18 @@ if len(gap_fillers) > 0:
 
 ### Example 3: Comparing Multiple Perspectives
 
-**Goal**: See how different significance types reveal different patterns
+**Goal**: See how the same sample looks across all three significance types
 ```python
-from datatypical_viz import plot_all_metrics
+from datatypical_viz import profile_plot
 
-# Overview: All three significance types at once
-fig, axes = plot_all_metrics(results, color_by='target_property')
-
-# Deep dive: Same samples across significance types
-top_idx = 42  # Some interesting sample
+# Deep dive: Same sample across all three significance types
+top_idx = results['archetypal_rank'].idxmax()
 
 fig, axes = plt.subplots(1, 3, figsize=(30, 5))
 profile_plot(dt_model, top_idx, significance='archetypal', order='global', ax=axes[0])
 profile_plot(dt_model, top_idx, significance='prototypical', order='global', ax=axes[1])
 profile_plot(dt_model, top_idx, significance='stereotypical', order='global', ax=axes[2])
+plt.tight_layout()
 
 # Look for: Different feature importance patterns across significance types
 ```
@@ -419,7 +459,7 @@ profile_plot(dt_model, top_idx, significance='stereotypical', order='global', ax
 - But representative (prototypical) due to features C, D
 - And optimal (stereotypical) due to features E, F
 
-**Discovery**: Different significance types reveal different aspects!
+**Discovery**: Different significance types reveal different aspects of the same sample!
 
 ---
 
@@ -508,7 +548,7 @@ for i, idx in enumerate(unique_mechanisms.index):
 
 ### "No explanations available for top N instances"
 
-**Cause**: When using `shapley_top_n`, explanations computed only for union of top-N samples per metric. If you request samples outside this set, no explanations exist.
+**Cause**: When using `shapley_top_n`, explanations are computed only for the union of top-N samples per metric. Requesting samples outside this set yields no explanations.
 
 **Solution**: 
 - Increase `shapley_top_n` when fitting
@@ -521,13 +561,31 @@ for i, idx in enumerate(unique_mechanisms.index):
 
 **What it means**: This is expected! The sample is important globally but not individually extreme.
 
-**Solution**: This is not an error - it reveals the distinction between formative and actual significance.  Increase your shapley_top_n when fitting to increase the chance all formative instances have explanations.
+**Solution**: Not an error — it reveals the distinction between formative and actual significance. Increase `shapley_top_n` to raise the chance all formative instances have explanations.
+
+### "No explanations available for '{significance}'"
+
+**Cause**: `profile_plot()` was called for a significance type excluded by `selected_significance`.
+
+**Solution**: Refit with `selected_significance=None` (compute all three) or set `selected_significance` to include the type you need.
+
+### "profile_plot()/heatmap() requires a tabular DataTypical fit"
+
+**Cause**: Model was fit on text or graph data, which does not store `feature_columns_` or `_df_original_fit`.
+
+**Solution**: These visualizations only work with tabular (DataFrame) input.
+
+### "Global ordering requires {significance} explanations, which are not available"
+
+**Cause**: `profile_plot(..., order='global')` called but the Phi matrix for that significance type is None (either not computed or excluded by `selected_significance`).
+
+**Solution**: Use `order='local'` instead, or refit ensuring the significance type is included.
 
 ### Features don't match between heatmap and profile plot
 
-**Cause**: Heatmap always uses global ordering, profile plot uses local or global based on `order` parameter.
+**Cause**: Heatmap always uses global ordering; profile plot uses local or global based on `order` parameter.
 
-**Solution**: This is intentional! Use `order='global'` in profile plot to match heatmap column order.
+**Solution**: Use `order='global'` in profile plot to match heatmap column order.
 
 ---
 
@@ -568,6 +626,7 @@ ax.figure.savefig('figure.pdf', bbox_inches='tight')  # Vector format
 | How does this compare to typical? | `profile_plot()` with `order='global'` |
 | Are there clusters/mechanisms? | `heatmap()` looking for vertical patterns |
 | What's the most important feature? | `heatmap()` left-most column |
+| Get top sample index safely | `get_top_sample()` |
 
 ### Key Principles
 
@@ -576,6 +635,7 @@ ax.figure.savefig('figure.pdf', bbox_inches='tight')  # Vector format
 3. **Flexible sample ordering**: Order by actual (what IS) or formative (what CREATES) based on question
 4. **Local vs global**: Profile plots can show individual (local) or typical (global) importance patterns
 5. **Complementary views**: Use all three plots together for complete understanding
+6. **Tabular only**: Visualization functions require a tabular fit; text/graph fits are not supported
 
 ### The Workflow
 

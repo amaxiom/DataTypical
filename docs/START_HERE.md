@@ -349,7 +349,7 @@ results = dt.fit_transform(node_features, edges=edges)
 A: PCA finds linear components, clustering finds groups. DataTypical finds instance-level significance through multiple lenses simultaneously, with explanations for why samples matter.
 
 **Q: Do I need to choose between archetypal/prototypical/stereotypical?**  
-A: No! You get all three at once. Different perspectives reveal different insights.
+A: No! You get all three at once. But if you only need one, set `selected_significance='archetypal'` (or `'prototypical'`/`'stereotypical'`) to skip computing the others and save time.
 
 **Q: Why is Shapley mode slower?**  
 A: Shapley values require computing contributions across many sample coalitions. The depth of explanation requires computational work.

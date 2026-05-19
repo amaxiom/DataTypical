@@ -1,6 +1,6 @@
 # DataTypical Package Summary
 
-**Version 0.7** | Comprehensive technical reference
+**Version 0.7.6** | Comprehensive technical reference
 
 ---
 
@@ -11,6 +11,18 @@ DataTypical is a Python library for explainable instance significance discovery 
 **Key Innovation**: Dual-perspective analysis distinguishing samples that ARE significant (actual) from samples that CREATE structure (formative).
 
 **Supported Data Types**: Tabular, text, and graph networks through unified API with automatic detection.
+
+---
+
+## What's New in v0.7.6
+
+- **`selected_significance` parameter**: Compute only one significance type (`'archetypal'`, `'prototypical'`, or `'stereotypical'`) and skip the others, substantially reducing compute time when only one perspective is needed. Uncomputed ranks are returned as NaN.
+- **Fixed prototype transform correctness**: `transform()` on new data now uses stored training prototype feature vectors (`prototype_features_`, `prototype_features_l2_`) rather than incorrectly indexing the new data by the training prototype positions.
+- **Text Shapley fully supported**: Both formative instance discovery and feature-level Shapley explanations now run on text data paths, matching the tabular behaviour. Previously text paths silently skipped Shapley analysis.
+- **Iterator exhaustion fix**: All text fit/transform methods now materialize iterables to lists at entry, preventing silent failures when a generator-type corpus was passed.
+- **Stereotypical explanations index fix**: Corrected a local/global index mismatch in `_fit_shapley_explanations` where `explain_stereotypical_features` received local indices (0..len(subset)-1) but was indexing the full-length target array. `target_values` is now correctly sliced to match each computation tier.
+- **Improved error messages**: `_score_with_fitted` now gives specific guidance when a significance type was not fitted due to `selected_significance` mismatch.
+- **FAISS removed**: The FAISS import was dead code (only referenced inside a removed internal method) and has been cleaned up.
 
 ---
 
@@ -43,6 +55,8 @@ dt = DataTypical(
     n_archetypes=8,
     n_prototypes=8,
     stereotype_column=None,
+    stereotype_target='max',       # 'max', 'min', or numeric value
+    selected_significance=None,    # 'archetypal', 'prototypical', 'stereotypical', or None (all)
     archetypal_method='nmf',
     shapley_n_permutations=100,
     shapley_top_n=500,

@@ -1,6 +1,6 @@
 # DataTypical Quick Reference
 
-**Version 0.7** | Daily reference for exploring instance significance
+**Version 0.7.6** | Daily reference for exploring instance significance
 
 ---
 
@@ -102,6 +102,7 @@ dt = DataTypical(shapley_mode=True)
 | `n_archetypes` | `8` | Number of extreme "corners" to find |
 | `n_prototypes` | `8` | Number of representative samples |
 | `stereotype_column` | `None` | Column name for target pattern |
+| `selected_significance` | `None` | Compute only one type: `'archetypal'`, `'prototypical'`, or `'stereotypical'` (None = all three) |
 | `shapley_top_n` | `500` | Limit explanations to top N samples |
 
 ### For Stereotypical Analysis

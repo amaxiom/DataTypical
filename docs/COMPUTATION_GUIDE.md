@@ -1,4 +1,4 @@
-# DataTypical v0.7 - Computation Guide
+# DataTypical v0.7.6 - Computation Guide
 
 ## Table of Contents
 
@@ -40,6 +40,8 @@ The key innovation is the Shapley-based dual perspectives introduced in v0.6:
 
 Version 0.7 introduced `fast_mode` for rapid exploration with 30x speedup versus publication-quality analysis.
 
+Version 0.7.6 introduces `selected_significance` for selective computation of one significance type, fixes prototype feature storage so `transform()` on new data uses the correct training prototype vectors (not indices into the new data), enables full Shapley analysis (formative + explanations) on text data paths, fixes iterator exhaustion in all text fit/transform methods, and corrects a local/global index mismatch in stereotypical Shapley explanations when subsampling is active.
+
 Version 0.7.2 replaces the ConvexHull-based archetypal formative value function with a cached archetype geometry approach. The previous ConvexHull implementation scaled as O(n^(d/2)) per permutation call, making it intractable for datasets with more than 8 features. The cached approach uses fixed archetypes from the fitted model (H_), reducing computation to O(n_archetypes x n_subset x n_features) distance arithmetic while strengthening the scientific consistency of the dual-perspective scatter plot.
 
 ---
@@ -61,10 +63,11 @@ Version 0.7.2 replaces the ConvexHull-based archetypal formative value function 
 | Package | Version | Purpose | Speedup |
 |---------|---------|---------|---------|
 | `numba` | >= 0.56 | JIT compilation of distance functions | 2-5x |
-| `faiss` | >= 1.7 | Fast similarity search for large datasets | 10-50x |
 | `scipy` | >= 1.7 | Sparse matrices, ConvexHull | Required for text |
 | `py_pcha` | >= 0.1 | Principal Convex Hull Analysis | Stable high-D archetypes |
 | `networkx` | >= 2.6 | Graph topology features | Required for graph mode |
+
+> **Note (v0.7.6)**: FAISS was removed as a runtime dependency. The FAISS integration was tied to an internal method that was not part of the public API and has been removed.
 
 ### Detection at Runtime
 
@@ -75,7 +78,6 @@ from datatypical import DataTypical
 dt = DataTypical(verbose=True)
 # Output shows which optimizations are available:
 #   NUMBA_AVAILABLE: True/False
-#   FAISS_AVAILABLE: True/False
 #   PCHA: True/False
 ```
 
@@ -244,6 +246,8 @@ def _l2_normalize_rows_dense(X: np.ndarray) -> np.ndarray:
 ```
 
 ### Text Data Pipeline
+
+> **v0.7.6**: Full Shapley analysis (both formative instance discovery and feature-level explanations) now runs on text data paths, matching the tabular data behaviour. Iterables are materialized to lists at the entry point of all text fit/transform methods to prevent iterator exhaustion.
 
 **Step 1: TF-IDF Vectorization**
 
@@ -491,14 +495,16 @@ def row_key(i: int) -> int:
 
 This ensures identical results regardless of input ordering.
 
-### Optional FAISS Acceleration
+### Fitted Prototype Attributes (v0.7.6)
 
-For datasets with n > 1,000, FAISS provides massive speedups:
+After fitting, prototype feature vectors are stored on the model so that `transform()` on new data uses the correct training-time vectors rather than indexing the new data by position:
 
 ```python
-if FAISS_AVAILABLE and n > 1000 and not self.speed_mode:
-    return self._select_with_faiss(X, weights, forbidden)
+dt.prototype_features_     # (n_prototypes, n_features) — Euclidean-space prototype rows
+dt.prototype_features_l2_  # (n_prototypes, n_features) — L2-normalized prototype rows
 ```
+
+These are used in `_score_with_fitted` and `_assignments_cosine` during transform.
 
 ### Prototypical Score Computation
 
@@ -1072,6 +1078,12 @@ where V is value function cost.
 | `shapley_early_stopping_patience` | int | 10 | Convergence patience |
 | `shapley_early_stopping_tolerance` | float | 0.01 | Convergence threshold |
 | `shapley_compute_formative` | bool | None | Compute formative instances |
+
+### Significance Selection (v0.7.6)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `selected_significance` | str | None | Compute only one type: `'archetypal'`, `'prototypical'`, or `'stereotypical'`. Uncomputed types return NaN. None computes all three. |
 
 ### Performance Mode (v0.7)
 
