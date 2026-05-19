@@ -1,5 +1,5 @@
 """
-DataTypical v0.7.5 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.7.6 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
@@ -12,6 +12,14 @@ Key Innovation:
 Two complementary perspectives:
 1. LOCAL: "This sample IS significant because features X, Y contribute most"
 2. GLOBAL: "This sample CREATES significance by defining the distribution and boundary"
+
+What's new in v0.7.6:
+- selected_significance parameter: compute only one significance type at a time
+- Fixed prototype feature storage so transform() on new data uses correct vectors
+- Full Shapley analysis (formative + explanations) now runs on text data paths
+- Fixed iterator exhaustion in all text fit/transform methods
+- Fixed local/global index mismatch in stereotypical Shapley explanations
+- Improved error messages when a significance type was not fitted
 
 What's new in v0.7:
 - shapley_mode parameter (True/False)
@@ -97,12 +105,6 @@ try:
     from py_pcha import PCHA
 except ImportError:
     PCHA = None
-
-try:
-    import faiss
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
 
 # ============================================================
 # [A] Exceptions & Globals
@@ -277,9 +279,9 @@ def _euclidean_min_jit(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
     return min_dists
 
 
-@jit(nopython=True, cache=True, fastmath=True)
+@jit(nopython=True, parallel=True, cache=True, fastmath=True)
 def _euclidean_chunk_jit(
-    X: np.ndarray, 
+    X: np.ndarray,
     Y_chunk: np.ndarray,
     x2: np.ndarray
 ) -> np.ndarray:
@@ -303,9 +305,9 @@ def _euclidean_chunk_jit(
         y2[j] = y2_val
     
     # Parallel loop over X samples
-    for i in range(n):
+    for i in prange(n):
         min_dist_sq = np.inf
-        
+
         for j in range(m):
             # Compute dot product
             dot = 0.0
@@ -322,7 +324,7 @@ def _euclidean_chunk_jit(
     
     return min_dists
 
-@jit(nopython=True, cache=True, fastmath=True)
+@jit(nopython=True, parallel=True, cache=True, fastmath=True)
 def _pairwise_euclidean_jit(X: np.ndarray) -> np.ndarray:
     """
     JIT-compiled pairwise Euclidean distance matrix.
@@ -336,7 +338,7 @@ def _pairwise_euclidean_jit(X: np.ndarray) -> np.ndarray:
     dists = np.zeros((n, n), dtype=np.float64)
     
     # Parallel outer loop
-    for i in range(n):
+    for i in prange(n):
         for j in range(i + 1, n):
             dist_sq = 0.0
             for k in range(d):
@@ -350,7 +352,7 @@ def _pairwise_euclidean_jit(X: np.ndarray) -> np.ndarray:
     return dists
 
 
-@jit(nopython=True, cache=True, fastmath=True)  
+@jit(nopython=True, parallel=True, cache=True, fastmath=True)
 def _cosine_similarity_jit(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
     """
     JIT-compiled cosine similarity between L2-normalized vectors.
@@ -364,7 +366,7 @@ def _cosine_similarity_jit(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
     sims = np.empty((n, m), dtype=np.float64)
     
     # Parallel loop over X samples
-    for i in range(n):
+    for i in prange(n):
         for j in range(m):
             dot = 0.0
             for k in range(d):
@@ -388,9 +390,9 @@ class FacilityLocationSelector:
     def select(self, X_l2, weights=None, forbidden=None):
         """
         Deterministic CELF for facility-location with:
-          â€¢ content-based tie-breaking (perm-invariant),
-          â€¢ optional client weights (e.g., density),
-          â€¢ optional forbidden candidate set (still count as clients).
+          - content-based tie-breaking (perm-invariant),
+          - optional client weights (e.g., density),
+          - optional forbidden candidate set (still count as clients).
         Expects rows to be L2-normalized. Works with dense or sparse input.
         Returns: (selected_indices, marginal_gains)
         """
@@ -455,7 +457,7 @@ class FacilityLocationSelector:
         last_gain[:] = g0
         last_eval[:] = 0
     
-        # heap items: (-gain_estimate, key, idx)  â€“ ties broken by content key
+        # heap items: (-gain_estimate, key, idx) -- ties broken by content key
         heap = [(-float(g0[c]), int(keys[c]), int(c)) for c in range(n) if not forb[c]]
         heapq.heapify(heap)
     
@@ -484,121 +486,6 @@ class FacilityLocationSelector:
     
         return np.asarray(selected, dtype=int), np.asarray(gains, dtype=float)
 
-
-def select(self, X_l2, weights=None, forbidden=None):
-        """
-        Select prototypes using lazy CELF with optional FAISS acceleration.
-        
-        OPTIMIZED: Uses FAISS for datasets with n > 1,000 samples for massive speedup.
-        MEMORY OPTIMIZED: Explicit cleanup of similarity matrix after use.
-        """
-        import numpy as np
-    
-        if sp is not None and sp.isspmatrix(X_l2):
-            X = X_l2.toarray().astype(np.float64, copy=False)
-        else:
-            X = np.asarray(X_l2, dtype=np.float64)
-        n = X.shape[0]
-        if n == 0:
-            return np.array([], dtype=int), np.array([], dtype=float)
-    
-        # Normalize weights
-        if weights is None:
-            w = np.ones(n, dtype=np.float64)
-        else:
-            w = np.asarray(weights, dtype=np.float64).ravel()
-            m = float(w.mean())
-            w = w / m if m > 0 else np.ones_like(w)
-        
-        # OPTIMIZED: Use FAISS for large datasets if available
-        use_faiss = FAISS_AVAILABLE and n > 1000 and not self.speed_mode
-        
-        if use_faiss:
-            if self.verbose:
-                print(f"  Using FAISS acceleration for n={n}")
-            result = self._select_with_faiss(X, w, forbidden)
-            # MEMORY CLEANUP: Free X copy before returning
-            _cleanup_memory(X, force_gc=True)
-            return result
-        
-        # Otherwise use the cached similarity matrix approach
-        import heapq, hashlib
-        
-        # Handle forbidden indices
-        forb = np.zeros(n, dtype=bool)
-        if forbidden is not None:
-            forb_idx = np.asarray(list(forbidden), dtype=int)
-            forb_idx = forb_idx[(forb_idx >= 0) & (forb_idx < n)]
-            forb[forb_idx] = True
-    
-        k_req = int(getattr(self, "n_prototypes", min(10, n)))
-        available = n - int(forb.sum())
-        k = max(0, min(k_req, available))
-        if k == 0:
-            return np.array([], dtype=int), np.array([], dtype=float)
-    
-        # Pre-compute similarity matrix
-        XT = X.T
-        S = X @ XT
-        np.maximum(S, 0.0, out=S)
-        
-        # MEMORY CLEANUP: Free XT after similarity computation
-        _cleanup_memory(XT)
-        
-        # Pre-compute weighted candidate similarities
-        S_weighted = w[None, :] * S
-        candidate_sims = S_weighted.sum(axis=1)
-        
-        # MEMORY CLEANUP: Free S_weighted after computing candidate_sims
-        _cleanup_memory(S_weighted)
-        
-        # Generate deterministic keys
-        def row_key(i: int) -> int:
-            h = hashlib.blake2b(X[i].tobytes(), digest_size=8)
-            return int.from_bytes(h.digest(), "big", signed=False)
-        keys = np.fromiter((row_key(i) for i in range(n)), dtype=np.uint64, count=n)
-    
-        # CELF state tracking
-        best = np.zeros(n, dtype=np.float64)
-        last_eval = np.full(n, -1, dtype=np.int64)
-        last_gain = candidate_sims.copy()
-        last_eval[:] = 0
-    
-        # Initialize heap
-        heap = [(-float(candidate_sims[c]), int(keys[c]), int(c)) 
-                for c in range(n) if not forb[c]]
-        heapq.heapify(heap)
-    
-        selected = []
-        gains = []
-        it = 0
-        
-        while len(selected) < k and heap:
-            neg_g_est, _, c = heapq.heappop(heap)
-            
-            if last_eval[c] == it:
-                selected.append(c)
-                gains.append(float(last_gain[c]))
-                s_c = S[c, :]
-                np.maximum(best, s_c, out=best)
-                it += 1
-                continue
-            
-            # Lazy evaluation
-            s_c = S[c, :]
-            improv = s_c - best
-            improv[improv < 0.0] = 0.0
-            g_exact = float((w * improv).sum(dtype=np.float64))
-            
-            last_gain[c] = g_exact
-            last_eval[c] = it
-            heapq.heappush(heap, (-g_exact, int(keys[c]), int(c)))
-        
-        # MEMORY CLEANUP: Free large arrays before returning
-        _cleanup_memory(S, X, best, last_gain, candidate_sims, force_gc=True)
-        
-        return np.asarray(selected, dtype=int), np.asarray(gains, dtype=float)
-    
 
 # ============================================================
 # [E] Shapley Significance Engine (NEW in v0.6)
@@ -1244,6 +1131,10 @@ class DataTypical:
     fast_mode: bool = False
     archetypal_method: Optional[str] = None
 
+    # ---- Significance Selection ----
+    # None = compute all three; "archetypal" / "prototypical" / "stereotypical" = one only
+    selected_significance: Optional[str] = None
+
     # ---- Artifacts ----
     W_: Optional[np.ndarray] = field(default=None, init=False)
     H_: Optional[np.ndarray] = field(default=None, init=False)
@@ -1252,6 +1143,8 @@ class DataTypical:
     n_archetypes_: Optional[int] = field(default=None, init=False)
     prototype_indices_: Optional[np.ndarray] = field(default=None, init=False)
     prototype_rows_: Optional[np.ndarray] = field(default=None, init=False)
+    prototype_features_: Optional[np.ndarray] = field(default=None, init=False)
+    prototype_features_l2_: Optional[np.ndarray] = field(default=None, init=False)
     marginal_gains_: Optional[np.ndarray] = field(default=None, init=False)
     assignments_: Optional[np.ndarray] = field(default=None, init=False)
     coverage_: Optional[np.ndarray] = field(default=None, init=False)
@@ -1632,6 +1525,7 @@ class DataTypical:
         text_metadata: Optional[pd.DataFrame] = None
     ):
         """Internal method for fitting text data."""
+        corpus = list(corpus)  # materialize once; _preprocess_text_fit may consume it
         self._validate_stereotype_config()
         with _ThreadControl(self.deterministic and not self.speed_mode) as tc:
             _seed_everything(self.random_state)
@@ -1639,6 +1533,20 @@ class DataTypical:
             idx = pd.RangeIndex(X_scaled.shape[0])
             self.train_index_ = idx
             self._fit_components(X_scaled, X_l2, idx)
+
+            # Store stereotype source for Shapley (text: metadata column or keyword scores)
+            if self.shapley_mode:
+                if self.stereotype_column is not None and self.text_metadata_ is not None \
+                        and self.stereotype_column in self.text_metadata_.columns:
+                    self._stereotype_source_fit_ = self.text_metadata_[self.stereotype_column]
+                elif self.stereotype_keyword_scores_ is not None:
+                    self._stereotype_source_fit_ = pd.Series(self.stereotype_keyword_scores_)
+                if self.verbose:
+                    print("\n" + "="*70)
+                    print("SHAPLEY DUAL-PERSPECTIVE ANALYSIS")
+                    print("="*70)
+                self._fit_shapley_dual_perspective(X_scaled, X_l2, idx)
+
             self._record_settings(tc)
         return self
     
@@ -1689,10 +1597,10 @@ class DataTypical:
                 stereotype_source = self._get_stereotype_source_table(df)
             
             ranks = self._score_with_fitted(X_scaled, X_l2, df.index, stereotype_source)
-    
-            # Add Shapley rankings (including None columns if formative skipped)
+
+            # Add Shapley formative rankings aligned to the current data index
             if self.shapley_mode:
-                shapley_ranks = self._compute_shapley_formative_ranks()
+                shapley_ranks = self._compute_shapley_formative_ranks().reindex(df.index)
                 ranks = pd.concat([ranks, shapley_ranks], axis=1)
         
         if return_ranks_only:
@@ -1708,6 +1616,7 @@ class DataTypical:
         return_ranks_only: bool = False
     ) -> pd.DataFrame:
         """Internal method for transforming text data."""
+        corpus = list(corpus)  # materialize once so keyword scoring can reuse it
         with _ThreadControl(self.deterministic and not self.speed_mode):
             X_scaled, X_l2 = self._preprocess_text_transform(corpus)
             idx = pd.RangeIndex(X_scaled.shape[0])
@@ -1730,10 +1639,10 @@ class DataTypical:
                 stereotype_source = pd.Series(keyword_scores)
             
             ranks = self._score_with_fitted(X_scaled, X_l2, idx, stereotype_source)
-            
-            # Add Shapley rankings (including None columns if formative skipped)
+
+            # Add Shapley formative rankings aligned to the current data index
             if self.shapley_mode:
-                shapley_ranks = self._compute_shapley_formative_ranks()
+                shapley_ranks = self._compute_shapley_formative_ranks().reindex(idx)
                 ranks = pd.concat([ranks, shapley_ranks], axis=1)
             
             return ranks
@@ -1817,10 +1726,13 @@ class DataTypical:
                     stereotype_source = self._stereotype_source_fit_ if hasattr(self, '_stereotype_source_fit_') else None
                     temp_results = self._score_with_fitted(X_scaled, X_l2, index, stereotype_source)
     
-                    # Get top n_subsample for each metric separately
-                    top_arch = set(temp_results.nlargest(n_subsample, 'archetypal_rank').index)
-                    top_proto = set(temp_results.nlargest(n_subsample, 'prototypical_rank').index)
-                    top_stereo = set(temp_results.nlargest(n_subsample, 'stereotypical_rank').index)
+                    # Get top n_subsample for each metric separately (skip NaN columns from selected_significance)
+                    _run_arch  = self.selected_significance is None or self.selected_significance == "archetypal"
+                    _run_proto = self.selected_significance is None or self.selected_significance == "prototypical"
+                    _run_stereo = self.selected_significance is None or self.selected_significance == "stereotypical"
+                    top_arch  = set(temp_results.nlargest(n_subsample, 'archetypal_rank').index)  if _run_arch  else set()
+                    top_proto = set(temp_results.nlargest(n_subsample, 'prototypical_rank').index) if _run_proto else set()
+                    top_stereo = set(temp_results.nlargest(n_subsample, 'stereotypical_rank').index) if _run_stereo else set()
     
                     # Union of all top samples - NO TRIMMING
                     # Ensures all top-N samples from each metric have Shapley values
@@ -1835,13 +1747,19 @@ class DataTypical:
     
                     # Identify core samples (appear in multiple metric top-N lists)
                     # Core samples get full permutations; secondary get reduced permutations
+                    # When only one significance type is active, all samples are treated as core
+                    n_active_metrics = sum([bool(top_arch), bool(top_proto), bool(top_stereo)])
                     sample_counts = {}
                     for idx in top_indices_union:
                         count = sum([idx in top_arch, idx in top_proto, idx in top_stereo])
                         sample_counts[idx] = count
-    
-                    # Core = samples in 2+ metrics (most important)
-                    core_samples_df_idx = [idx for idx, cnt in sample_counts.items() if cnt >= 2]
+
+                    if n_active_metrics <= 1:
+                        # Single significance type: all top samples are equally important
+                        core_samples_df_idx = list(top_indices_union)
+                    else:
+                        # Core = samples in 2+ metrics (most important)
+                        core_samples_df_idx = [idx for idx, cnt in sample_counts.items() if cnt >= 2]
                     core_positions = sorted([index.get_loc(idx) for idx in core_samples_df_idx])
                     self._union_core_samples = np.array(core_positions)
     
@@ -1866,45 +1784,46 @@ class DataTypical:
                 verbose=self.verbose
             )
     
+            run_arch_shap  = self.selected_significance is None or self.selected_significance == "archetypal"
+            run_proto_shap = self.selected_significance is None or self.selected_significance == "prototypical"
+            run_stereo_shap = self.selected_significance is None or self.selected_significance == "stereotypical"
+
             # PERSPECTIVE 1: Formative Instances (optional)
             if compute_formative:
                 if self.verbose:
                     print("\n[1] Computing Formative Instances (global perspective)...")
                     print("    Using FULL dataset (required to measure structure)")
-    
-                # Formative archetypal: uses cached archetypes (self.H_) as geometric reference.
-                # Both actual ranks (from self.H_) and formative Shapley values now reference
-                # the same fitted archetypal geometry, ensuring dual-perspective consistency.
-                # This replaces the ConvexHull approach which was O(n^(d/2)) per call and
-                # intractable for datasets with more than 8 features.
-                context_archetypal = {'archetypes': self.H_.astype(np.float64)}
-                self.Phi_archetypal_formative_, self.shapley_info_['archetypal_formative'] = \
-                    engine.compute_shapley_values(
-                        X_dense,
-                        formative_archetypal_pcha_cached,
-                        "Archetypal Formative (Cached Archetypes)",
-                        context_archetypal
-                    )
-                # MEMORY CLEANUP: Free archetypal context
-                _cleanup_memory(context_archetypal)
-    
-                # Formative prototypical (coverage)
-                self.Phi_prototypical_formative_, self.shapley_info_['prototypical_formative'] = \
-                    engine.compute_shapley_values(
-                        X_dense,
-                        formative_prototypical_coverage,
-                        "Prototypical Formative (Coverage)"
-                    )
-    
-                # Formative stereotypical (extremeness)
-                if self.stereotype_column is not None and hasattr(self, '_stereotype_source_fit_'):
+
+                if run_arch_shap and self.H_ is not None:
+                    context_archetypal = {'archetypes': self.H_.astype(np.float64)}
+                    self.Phi_archetypal_formative_, self.shapley_info_['archetypal_formative'] = \
+                        engine.compute_shapley_values(
+                            X_dense,
+                            formative_archetypal_pcha_cached,
+                            "Archetypal Formative (Cached Archetypes)",
+                            context_archetypal
+                        )
+                    _cleanup_memory(context_archetypal)
+                else:
+                    self.Phi_archetypal_formative_ = None
+
+                if run_proto_shap:
+                    self.Phi_prototypical_formative_, self.shapley_info_['prototypical_formative'] = \
+                        engine.compute_shapley_values(
+                            X_dense,
+                            formative_prototypical_coverage,
+                            "Prototypical Formative (Coverage)"
+                        )
+                else:
+                    self.Phi_prototypical_formative_ = None
+
+                if run_stereo_shap and self.stereotype_column is not None and hasattr(self, '_stereotype_source_fit_'):
                     target_values = self._stereotype_source_fit_.to_numpy(dtype=np.float64)
                     context = {
                         'target_values': target_values,
                         'target': self.stereotype_target,
                         'median': np.median(target_values)
                     }
-    
                     self.Phi_stereotypical_formative_, self.shapley_info_['stereotypical_formative'] = \
                         engine.compute_shapley_values(
                             X_dense,
@@ -1918,7 +1837,7 @@ class DataTypical:
                 # Skip formative computation (fast_mode)
                 if self.verbose:
                     print("\n[1] Skipping Formative Instances (fast_mode)")
-    
+
                 self.Phi_archetypal_formative_ = None
                 self.Phi_prototypical_formative_ = None
                 self.Phi_stereotypical_formative_ = None
@@ -1932,7 +1851,7 @@ class DataTypical:
                     print(f"    Computing for all {n_samples} instances")
     
             self._fit_shapley_explanations(
-                X_dense, X_l2, index, engine,
+                X_dense, index, engine,
                 subsample_indices_explanations
             )
     
@@ -1951,7 +1870,6 @@ class DataTypical:
     def _fit_shapley_explanations(
         self,
         X_dense: np.ndarray,
-        X_l2: ArrayLike,
         index: pd.Index,
         engine: ShapleySignificanceEngine,
         subsample_indices: Optional[np.ndarray] = None
@@ -1987,10 +1905,14 @@ class DataTypical:
             core_samples = samples_to_compute
             secondary_samples = np.array([])
         
-        # Initialize full-size arrays (zeros for non-computed samples)
-        self.Phi_archetypal_explanations_ = np.zeros((n_samples, n_features), dtype=np.float64)
-        self.Phi_prototypical_explanations_ = np.zeros((n_samples, n_features), dtype=np.float64)
-        self.Phi_stereotypical_explanations_ = np.zeros((n_samples, n_features), dtype=np.float64)
+        run_arch_exp  = self.selected_significance is None or self.selected_significance == "archetypal"
+        run_proto_exp = self.selected_significance is None or self.selected_significance == "prototypical"
+        run_stereo_exp = self.selected_significance is None or self.selected_significance == "stereotypical"
+
+        # Initialize full-size arrays only for selected significance types
+        self.Phi_archetypal_explanations_ = np.zeros((n_samples, n_features), dtype=np.float64) if run_arch_exp else None
+        self.Phi_prototypical_explanations_ = np.zeros((n_samples, n_features), dtype=np.float64) if run_proto_exp else None
+        self.Phi_stereotypical_explanations_ = np.zeros((n_samples, n_features), dtype=np.float64) if run_stereo_exp else None
         
         # Value functions for explanations
         def explain_archetypal_features(X_subset, indices, ctx):
@@ -2008,36 +1930,46 @@ class DataTypical:
             return float(np.mean(np.var(X_subset, axis=1)))
         
         context = {'sample_mode': 'features'}
-        
+
+        # Pre-extract full target array so per-tier subsets can be sliced correctly.
+        # Value functions receive LOCAL indices (0..len(X_subset)-1), so target_values
+        # must be sized to match the X subset passed to compute_feature_shapley_values.
+        _full_target_values: Optional[np.ndarray] = None
+        if run_stereo_exp and self.stereotype_column is not None and hasattr(self, '_stereotype_source_fit_'):
+            _full_target_values = self._stereotype_source_fit_.to_numpy(dtype=np.float64)
+
         # COMPUTE CORE SAMPLES (full permutations)
         if len(core_samples) > 0:
             if self.verbose:
                 print(f"  Computing explanations for significance rankings...")
-            
+
             X_core = X_dense[core_samples, :]
-            Phi_arch_core, info_arch = engine.compute_feature_shapley_values(
-                X_core,
-                explain_archetypal_features,
-                "Archetypal Explanations (Core)",
-                context
-            )
-            self.Phi_archetypal_explanations_[core_samples, :] = Phi_arch_core
-            self.shapley_info_['archetypal_explanations'] = info_arch
-            
-            if self.verbose:
-                print(f"  Computing prototypical explanations (core: {len(core_samples)} samples)...")
-            
-            Phi_proto_core, info_proto = engine.compute_feature_shapley_values(
-                X_core,
-                explain_prototypical_features,
-                "Prototypical Explanations (Core)",
-                context
-            )
-            self.Phi_prototypical_explanations_[core_samples, :] = Phi_proto_core
-            self.shapley_info_['prototypical_explanations'] = info_proto
-            
+
+            if run_arch_exp:
+                Phi_arch_core, info_arch = engine.compute_feature_shapley_values(
+                    X_core,
+                    explain_archetypal_features,
+                    "Archetypal Explanations (Core)",
+                    context
+                )
+                self.Phi_archetypal_explanations_[core_samples, :] = Phi_arch_core
+                self.shapley_info_['archetypal_explanations'] = info_arch
+
+            if run_proto_exp:
+                if self.verbose:
+                    print(f"  Computing prototypical explanations (core: {len(core_samples)} samples)...")
+
+                Phi_proto_core, info_proto = engine.compute_feature_shapley_values(
+                    X_core,
+                    explain_prototypical_features,
+                    "Prototypical Explanations (Core)",
+                    context
+                )
+                self.Phi_prototypical_explanations_[core_samples, :] = Phi_proto_core
+                self.shapley_info_['prototypical_explanations'] = info_proto
+
             # Stereotypical explanations (if applicable)
-            if self.stereotype_column is not None:
+            if run_stereo_exp and self.stereotype_column is not None:
                 def explain_stereotypical_features(X_subset, indices, ctx):
                     if len(X_subset) == 0 or X_subset.shape[1] == 0:
                         return 0.0
@@ -2066,8 +1998,9 @@ class DataTypical:
                     print(f"  Computing stereotypical explanations (core: {len(core_samples)} samples)...")
                 
                 context['stereotype_target'] = self.stereotype_target
-                context['target_values'] = self._stereotype_source_fit_.to_numpy(dtype=np.float64) if hasattr(self, '_stereotype_source_fit_') else None
-                context['median'] = np.median(context['target_values']) if context['target_values'] is not None else 0.0
+                context['median'] = np.median(_full_target_values) if _full_target_values is not None else 0.0
+                # Slice to core_samples so local index i == core_samples[i] globally
+                context['target_values'] = _full_target_values[core_samples] if _full_target_values is not None else None
                 
                 Phi_stereo_core, info_stereo = engine.compute_feature_shapley_values(
                     X_core,
@@ -2091,23 +2024,24 @@ class DataTypical:
                 print(f"  Computing explanations (secondary: {len(secondary_samples)} samples, {engine.n_permutations} perms)...")
             
             X_secondary = X_dense[secondary_samples, :]
-            
-            # Archetypal
-            Phi_arch_sec, _ = engine.compute_feature_shapley_values(
-                X_secondary, explain_archetypal_features,
-                "Archetypal Explanations (Secondary)", context
-            )
-            self.Phi_archetypal_explanations_[secondary_samples, :] = Phi_arch_sec
-            
-            # Prototypical
-            Phi_proto_sec, _ = engine.compute_feature_shapley_values(
-                X_secondary, explain_prototypical_features,
-                "Prototypical Explanations (Secondary)", context
-            )
-            self.Phi_prototypical_explanations_[secondary_samples, :] = Phi_proto_sec
-            
-            # Stereotypical
-            if self.stereotype_column is not None:
+
+            if run_arch_exp:
+                Phi_arch_sec, _ = engine.compute_feature_shapley_values(
+                    X_secondary, explain_archetypal_features,
+                    "Archetypal Explanations (Secondary)", context
+                )
+                self.Phi_archetypal_explanations_[secondary_samples, :] = Phi_arch_sec
+
+            if run_proto_exp:
+                Phi_proto_sec, _ = engine.compute_feature_shapley_values(
+                    X_secondary, explain_prototypical_features,
+                    "Prototypical Explanations (Secondary)", context
+                )
+                self.Phi_prototypical_explanations_[secondary_samples, :] = Phi_proto_sec
+
+            if run_stereo_exp and self.stereotype_column is not None:
+                # Re-slice target_values for secondary indices so local indices align
+                context['target_values'] = _full_target_values[secondary_samples] if _full_target_values is not None else None
                 Phi_stereo_sec, _ = engine.compute_feature_shapley_values(
                     X_secondary, explain_stereotypical_features,
                     "Stereotypical Explanations (Secondary)", context
@@ -2147,7 +2081,7 @@ class DataTypical:
             arch_scores = np.max(W_norm, axis=1)
             
             return float(np.mean(arch_scores))
-        except:
+        except Exception:
             return float(np.mean(np.ptp(X_subset, axis=0)))
 
     def _v04_prototypical_value(
@@ -2192,40 +2126,28 @@ class DataTypical:
             return float(-np.mean(np.abs(target_vals - float(target))))
 
     def _compute_shapley_formative_ranks(self) -> pd.DataFrame:
-        """Compute formative instance rankings from Shapley values."""
-        
-        # Check if formative was computed
-        if self.Phi_archetypal_formative_ is None:
-            # Return None columns if formative wasn't computed
-            n_samples = len(self.train_index_)
-            return pd.DataFrame({
-                'archetypal_shapley_rank': [None] * n_samples,
-                'prototypical_shapley_rank': [None] * n_samples,
-                'stereotypical_shapley_rank': [None] * n_samples,
-            }, index=self.train_index_)
-        
-        # Formative was computed - proceed normally
-        n_samples = self.Phi_archetypal_formative_.shape[0]
-        
-        arch_formative = self.Phi_archetypal_formative_.sum(axis=1)
-        proto_formative = self.Phi_prototypical_formative_.sum(axis=1)
-        
-        if self.Phi_stereotypical_formative_ is not None:
-            stereo_formative = self.Phi_stereotypical_formative_.sum(axis=1)
-        else:
-            stereo_formative = np.zeros(n_samples)
-        
-        def normalize(ranks):
-            r_min, r_max = ranks.min(), ranks.max()
+        """Compute formative instance rankings from Shapley values.
+
+        Handles any combination of None/non-None formative arrays so that
+        selected_significance omissions produce None columns rather than errors.
+        """
+        n_samples = len(self.train_index_)
+
+        def _norm_or_none(arr):
+            if arr is None:
+                return [None] * n_samples
+            vals = arr.sum(axis=1)
+            r_min, r_max = vals.min(), vals.max()
             if (r_max - r_min) > 1e-12:
-                return (ranks - r_min) / (r_max - r_min)
+                normalized = (vals - r_min) / (r_max - r_min)
             else:
-                return np.ones_like(ranks) * 0.5
-        
+                normalized = np.ones_like(vals) * 0.5
+            return np.round(normalized, 10)
+
         return pd.DataFrame({
-            'archetypal_shapley_rank': np.round(normalize(arch_formative), 10),
-            'prototypical_shapley_rank': np.round(normalize(proto_formative), 10),
-            'stereotypical_shapley_rank': np.round(normalize(stereo_formative), 10),
+            'archetypal_shapley_rank':    _norm_or_none(self.Phi_archetypal_formative_),
+            'prototypical_shapley_rank':  _norm_or_none(self.Phi_prototypical_formative_),
+            'stereotypical_shapley_rank': _norm_or_none(self.Phi_stereotypical_formative_),
         }, index=self.train_index_)
 
         
@@ -2233,8 +2155,13 @@ class DataTypical:
         """Get Shapley feature attributions explaining why sample is archetypal/prototypical/stereotypical."""
         if not self.shapley_mode:
             raise RuntimeError("Shapley mode not enabled. Set shapley_mode=True when fitting.")
-        
-        if self.Phi_archetypal_explanations_ is None:
+
+        all_none = (
+            self.Phi_archetypal_explanations_ is None
+            and self.Phi_prototypical_explanations_ is None
+            and self.Phi_stereotypical_explanations_ is None
+        )
+        if all_none:
             raise RuntimeError("Shapley explanations not computed. Call fit() first.")
         
         # Convert DataFrame index to positional index
@@ -2317,6 +2244,10 @@ class DataTypical:
             Document-level properties for stereotype computation
             Must have same number of rows as documents in corpus
         """
+        corpus = list(corpus)  # materialize once; _preprocess_text_fit may consume it
+        if not hasattr(self, '_fast_mode_applied'):
+            self._apply_fast_mode_defaults()
+            self._fast_mode_applied = True
         self._validate_stereotype_config()
         with _ThreadControl(self.deterministic and not self.speed_mode) as tc:
             _seed_everything(self.random_state)
@@ -2324,11 +2255,26 @@ class DataTypical:
             idx = pd.RangeIndex(X_scaled.shape[0])
             self.train_index_ = idx
             self._fit_components(X_scaled, X_l2, idx)
+
+            # Store stereotype source for Shapley (text: metadata column or keyword scores)
+            if self.shapley_mode:
+                if self.stereotype_column is not None and self.text_metadata_ is not None \
+                        and self.stereotype_column in self.text_metadata_.columns:
+                    self._stereotype_source_fit_ = self.text_metadata_[self.stereotype_column]
+                elif self.stereotype_keyword_scores_ is not None:
+                    self._stereotype_source_fit_ = pd.Series(self.stereotype_keyword_scores_)
+                if self.verbose:
+                    print("\n" + "="*70)
+                    print("SHAPLEY DUAL-PERSPECTIVE ANALYSIS")
+                    print("="*70)
+                self._fit_shapley_dual_perspective(X_scaled, X_l2, idx)
+
             self._record_settings(tc)
         return self
 
     def transform_text(self, corpus: Iterable[str]) -> pd.DataFrame:
         """Transform text corpus."""
+        corpus = list(corpus)  # materialize once so keyword scoring can reuse it
         with _ThreadControl(self.deterministic and not self.speed_mode):
             X_scaled, X_l2 = self._preprocess_text_transform(corpus)
             idx = pd.RangeIndex(X_scaled.shape[0])
@@ -2343,22 +2289,29 @@ class DataTypical:
             
             # Priority 2: Keyword scores (recompute on new corpus)
             elif self.stereotype_keywords is not None:
-                corpus_list = list(corpus)
-                X_tfidf = self.vectorizer_.transform(corpus_list)
+                X_tfidf = self.vectorizer_.transform(corpus)
                 keyword_scores = self._compute_keyword_scores(
-                    X_tfidf, corpus_list, self.stereotype_keywords
+                    X_tfidf, corpus, self.stereotype_keywords
                 )
                 stereotype_source = pd.Series(keyword_scores)
-            
-            return self._score_with_fitted(X_scaled, X_l2, idx, stereotype_source)
+
+            ranks = self._score_with_fitted(X_scaled, X_l2, idx, stereotype_source)
+
+            # Add Shapley formative rankings aligned to the current data index
+            if self.shapley_mode:
+                shapley_ranks = self._compute_shapley_formative_ranks().reindex(idx)
+                ranks = pd.concat([ranks, shapley_ranks], axis=1)
+
+            return ranks
 
     def fit_transform_text(
-        self, 
-        corpus: Iterable[str], 
+        self,
+        corpus: Iterable[str],
         vectorizer: str = "tfidf",
         text_metadata: Optional[pd.DataFrame] = None
     ) -> pd.DataFrame:
         """Fit and transform text in one step."""
+        corpus = list(corpus)  # materialize once so both fit and transform can use it
         self.fit_text(corpus, vectorizer=vectorizer, text_metadata=text_metadata)
         return self.transform_text(corpus)
 
@@ -2447,11 +2400,15 @@ class DataTypical:
             "nmf_rank","n_prototypes","scale","distance_metric","similarity_metric",
             "deterministic","n_jobs","max_iter_nmf","tol_nmf","speed_mode","dtype",
             "random_state","max_memory_mb","return_ranks_only","auto_n_prototypes",
-            "verbose","max_missing_frac",
+            "verbose","max_missing_frac","data_type",
             "stereotype_column","stereotype_target","label_columns",
-            "stereotype_keywords","graph_topology_features"
+            "stereotype_keywords","graph_topology_features",
+            "selected_significance",
+            "shapley_mode","shapley_n_permutations","shapley_top_n",
+            "shapley_early_stopping_patience","shapley_early_stopping_tolerance",
+            "shapley_compute_formative","fast_mode","archetypal_method",
         ]}
-        cfg["version"] = "0.4"
+        cfg["version"] = "0.7.6"
         return cfg
 
     @classmethod
@@ -2550,7 +2507,7 @@ class DataTypical:
                 try:
                     eigen_dict = nx.eigenvector_centrality(G, max_iter=100)
                     topology_data['eigenvector'] = [eigen_dict.get(i, 0.0) for i in range(n_nodes)]
-                except:
+                except Exception:
                     warnings.warn("Eigenvector centrality failed, using zeros")
                     topology_data['eigenvector'] = [0.0] * n_nodes
             
@@ -2564,7 +2521,16 @@ class DataTypical:
     # ============================================================
     def _validate_stereotype_config(self):
         """Validate stereotype configuration at fit time."""
-        
+
+        # Validate selected_significance
+        if self.selected_significance is not None:
+            _valid_sig = {'archetypal', 'prototypical', 'stereotypical'}
+            if self.selected_significance not in _valid_sig:
+                raise ConfigError(
+                    f"selected_significance must be one of {_valid_sig} or None, "
+                    f"got '{self.selected_significance}'"
+                )
+
         # Check conflicting specifications
         if self.stereotype_column is not None and self.stereotype_keywords is not None:
             raise ConfigError(
@@ -2870,7 +2836,7 @@ class DataTypical:
         if self.feature_weights is not None:
             w = np.asarray(self.feature_weights, dtype=np.float64).ravel()
             if w.shape[0] != len(self.feature_columns_):
-                warnings.warn("feature_weights length mismatch â€“ ignoring weights.")
+                warnings.warn("feature_weights length mismatch -- ignoring weights.")
             else:
                 X_scaled = (X_scaled * w[keep_mask]).astype(self.dtype, copy=False)
 
@@ -2901,7 +2867,7 @@ class DataTypical:
         X_scaled = X_scaled_full[:, self.keep_mask_]
 
         # Optional weights
-        if self.feature_weights is not None and len(self.feature_columns_) == self.feature_weights.shape[0]:
+        if self.feature_weights is not None and len(self.feature_columns_) == np.asarray(self.feature_weights).shape[0]:
             X_scaled = (X_scaled * np.asarray(self.feature_weights)[self.keep_mask_]).astype(self.dtype, copy=False)
 
         X_l2 = _l2_normalize_rows_dense(X_scaled.astype(np.float64))
@@ -3082,7 +3048,13 @@ class DataTypical:
         
         # Determine effective rank
         k_eff = min(self.nmf_rank, X_nonneg.shape[0], X_nonneg.shape[1])
-        
+        if k_eff < 1:
+            raise DataTypicalError(
+                f"NMF requires at least 1 component, but data shape {X_nonneg.shape} "
+                f"and nmf_rank={self.nmf_rank} yield k_eff={k_eff}. "
+                "Provide more samples or reduce nmf_rank."
+            )
+
         # OPTIMIZED: Determine target dtype
         input_dtype = X_scaled.dtype
         if input_dtype == np.float64:
@@ -3137,45 +3109,55 @@ class DataTypical:
         index : pd.Index
             Sample index
         """
+        run_arch = self.selected_significance is None or self.selected_significance == "archetypal"
+        run_proto = self.selected_significance is None or self.selected_significance == "prototypical"
+
         # ---- ARCHETYPAL ANALYSIS (NMF or AA)
-        X_euc = X_scaled.toarray().astype(np.float64, copy=False) \
-            if (sp is not None and sp.isspmatrix(X_scaled)) else np.asarray(X_scaled, dtype=np.float64)
-        
-        if self.verbose:
-            method_name = "Archetypal Analysis (PCHA+ConvexHull)" if self.archetypal_method == 'aa' else "NMF Approximation"
-            print(f"\nFitting archetypal: {method_name}")
-        
-        # Call appropriate method
-        if self.archetypal_method == 'aa':
-            W, H = self._fit_archetypal_aa(X_euc)
-        else:  # 'nmf'
-            W, H = self._fit_archetypal_nmf(X_euc)
-        
-        # Store with validation and correct dtype
-        input_dtype = X_euc.dtype
-        if input_dtype == np.float64:
-            target_dtype = np.float64
-        elif self.dtype == 'float32':
-            target_dtype = np.float32
+        if run_arch:
+            X_euc_fit = X_scaled.toarray().astype(np.float64, copy=False) \
+                if (sp is not None and sp.isspmatrix(X_scaled)) else np.asarray(X_scaled, dtype=np.float64)
+
+            if self.verbose:
+                method_name = "Archetypal Analysis (PCHA+ConvexHull)" if self.archetypal_method == 'aa' else "NMF Approximation"
+                print(f"\nFitting archetypal: {method_name}")
+
+            # Call appropriate method
+            if self.archetypal_method == 'aa':
+                W, H = self._fit_archetypal_aa(X_euc_fit)
+            else:  # 'nmf'
+                W, H = self._fit_archetypal_nmf(X_euc_fit)
+
+            # Store with validation and correct dtype
+            input_dtype = X_euc_fit.dtype
+            if input_dtype == np.float64:
+                target_dtype = np.float64
+            elif self.dtype == 'float32':
+                target_dtype = np.float32
+            else:
+                target_dtype = np.float64
+
+            self.W_ = W.astype(target_dtype, copy=False)
+            self.H_ = H.astype(target_dtype, copy=False)
+            self.n_archetypes_ = self.H_.shape[0]
+
+            # Final validation
+            n_samples, n_features = X_euc_fit.shape
+            assert self.W_.shape == (n_samples, self.n_archetypes_), \
+                f"W_ dimension mismatch: {self.W_.shape} vs ({n_samples}, {self.n_archetypes_})"
+            assert self.H_.shape == (self.n_archetypes_, n_features), \
+                f"H_ dimension mismatch: {self.H_.shape} vs ({self.n_archetypes_}, {n_features})"
+
+            # MEMORY CLEANUP: Free temporaries (stored in self.W_, self.H_)
+            _cleanup_memory(W, H, X_euc_fit)
+
+            if self.verbose:
+                print(f"  Stored: W ={self.W_.shape}, H ={self.H_.shape}, n_archetypes ={self.n_archetypes_}")
         else:
-            target_dtype = np.float64
-            
-        self.W_ = W.astype(target_dtype, copy=False)
-        self.H_ = H.astype(target_dtype, copy=False)
-        self.n_archetypes_ = self.H_.shape[0]
-        
-        # Final validation
-        n_samples, n_features = X_euc.shape
-        assert self.W_.shape == (n_samples, self.n_archetypes_), \
-            f"W_ dimension mismatch: {self.W_.shape} vs ({n_samples}, {self.n_archetypes_})"
-        assert self.H_.shape == (self.n_archetypes_, n_features), \
-            f"H_ dimension mismatch: {self.H_.shape} vs ({self.n_archetypes_}, {n_features})"
-        
-        # MEMORY CLEANUP: Free W, H temporaries (we've stored them in self.W_, self.H_)
-        _cleanup_memory(W, H)
-        
-        if self.verbose:
-            print(f"  Stored: W ={self.W_.shape}, H ={self.H_.shape}, n_archetypes ={self.n_archetypes_}")
+            self.W_ = None
+            self.H_ = None
+            self.n_archetypes_ = 0
+            if self.verbose:
+                print(f"\nSkipping archetypal (selected_significance='{self.selected_significance}')")
         
         # ---- Prepare scaled dense & L2 copies
         X_euc = X_scaled.toarray().astype(np.float64, copy=False) \
@@ -3204,79 +3186,100 @@ class DataTypical:
         
         # ---- Helper: kNN density (cosine)
         def _knn_density_cosine(Xl2_arr: np.ndarray, k: int = 10, clip_neg: bool = True) -> np.ndarray:
-            S = Xl2_arr @ Xl2_arr.T
-            if clip_neg:
-                S[S < 0.0] = 0.0
-            np.fill_diagonal(S, 0.0)
             k = max(1, min(k, max(1, n - 1)))
-            topk = np.partition(S, -k, axis=1)[:, -k:]
-            dens = topk.mean(axis=1)
-            m = dens.mean()
-            return dens / m if m > 0 else np.ones_like(dens)
+            # Chunked row-wise dot product: caps memory at chunk_size×n instead of n×n.
+            # Each block is at most ~256 MB regardless of n.
+            chunk_size = max(1, min(n, int(256 * 1024 * 1024 // max(1, 8 * n))))
+            top_k_means = np.zeros(n)
+            for row_start in range(0, n, chunk_size):
+                row_end = min(n, row_start + chunk_size)
+                block = Xl2_arr[row_start:row_end] @ Xl2_arr.T  # (chunk, n)
+                if clip_neg:
+                    np.maximum(block, 0.0, out=block)
+                diag_r = np.arange(row_end - row_start)
+                block[diag_r, diag_r + row_start] = 0.0
+                topk_block = np.partition(block, -k, axis=1)[:, -k:]
+                top_k_means[row_start:row_end] = topk_block.mean(axis=1)
+            m = top_k_means.mean()
+            return top_k_means / m if m > 0 else np.ones_like(top_k_means)
         
         # ---- Build forbidden set from top archetypal (if enabled)
         disallow_overlap = bool(getattr(self, "disallow_overlap", False))
         overlap_alpha = float(getattr(self, "overlap_alpha", 0.0))
         forbidden = set()
-        if disallow_overlap and overlap_alpha > 0.0:
+        if run_arch and disallow_overlap and overlap_alpha > 0.0:
             corner = _corner_scores(X_euc)
             m = max(1, min(n - 1, int(math.ceil(overlap_alpha * n))))
             order = np.argsort(-corner)
             forbidden = set(order[:m])
-        
-        # ---- Compute kNN density for prototype selection
-        dens = _knn_density_cosine(Xl2, k=10)
-        
-        # ---- Prototypes via CELF with optional density weighting
-        if self.verbose:
-            print(f"\nFitting prototypes: Facility Location (k={self.n_prototypes})")
-        
-        # Determine if density weighting is enabled
-        density_weighted_fl = bool(getattr(self, "density_weighted_fl", False))
-        density_k = int(getattr(self, "density_k", 10))
-        density_clip_neg = bool(getattr(self, "density_clip_neg", True))
-        weights = dens if density_weighted_fl else None
-        
-        # Run facility location selector (it handles similarity matrix internally)
-        selector = FacilityLocationSelector(
-            n_prototypes=self.n_prototypes,
-            deterministic=self.deterministic,
-            speed_mode=self.speed_mode,
-            verbose=self.verbose
-        )
-        P_idx, mg = selector.select(Xl2, weights=weights, forbidden=forbidden)
-        
-        # Optional auto-k (Kneedle)
-        knee = None
-        if self.auto_n_prototypes == "kneedle" and mg.size >= 2:
-            knee = self._kneedle(mg)
-            if knee is not None and knee > 0:
-                P_idx = P_idx[:knee]
-                mg = mg[:knee]
-        
-        self.prototype_indices_ = P_idx
-        self.prototype_rows_ = index.to_numpy()[P_idx]
-        self.marginal_gains_ = mg
-        self.knee_ = knee
-        
-        # Detect knee in marginal gains
-        if len(mg) > 2:
-            diffs = np.diff(mg)
-            if len(diffs) > 1:
-                diffs2 = np.diff(diffs)
-                self.knee_ = int(np.argmax(np.abs(diffs2)) + 1)
+
+        if run_proto:
+            # ---- Compute kNN density for prototype selection
+            dens = _knn_density_cosine(Xl2, k=10)
+
+            # ---- Prototypes via CELF with optional density weighting
+            if self.verbose:
+                print(f"\nFitting prototypes: Facility Location (k={self.n_prototypes})")
+
+            # Determine if density weighting is enabled
+            density_weighted_fl = bool(getattr(self, "density_weighted_fl", False))
+            density_k = int(getattr(self, "density_k", 10))
+            density_clip_neg = bool(getattr(self, "density_clip_neg", True))
+            weights = dens if density_weighted_fl else None
+
+            # Run facility location selector (it handles similarity matrix internally)
+            selector = FacilityLocationSelector(
+                n_prototypes=self.n_prototypes,
+                deterministic=self.deterministic,
+                speed_mode=self.speed_mode,
+                verbose=self.verbose
+            )
+            P_idx, mg = selector.select(Xl2, weights=weights, forbidden=forbidden)
+
+            # Optional auto-k (Kneedle)
+            knee = None
+            if self.auto_n_prototypes == "kneedle" and mg.size >= 2:
+                knee = self._kneedle(mg)
+                if knee is not None and knee > 0:
+                    P_idx = P_idx[:knee]
+                    mg = mg[:knee]
+
+            self.prototype_indices_ = P_idx
+            self.prototype_rows_ = index.to_numpy()[P_idx]
+            self.prototype_features_ = X_euc[P_idx].copy()
+            self.prototype_features_l2_ = Xl2[P_idx].copy()
+            self.marginal_gains_ = mg
+            self.knee_ = knee
+
+            # Detect knee in marginal gains
+            if len(mg) > 2:
+                diffs = np.diff(mg)
+                if len(diffs) > 1:
+                    diffs2 = np.diff(diffs)
+                    self.knee_ = int(np.argmax(np.abs(diffs2)) + 1)
+                else:
+                    self.knee_ = 1
             else:
-                self.knee_ = 1
+                self.knee_ = len(mg)
+
+            # Training-time assignments & coverage
+            best_cos, proto_label = self._assignments_cosine(Xl2, P_idx)
+            self.assignments_ = proto_label
+            self.coverage_ = best_cos
+
+            if self.verbose:
+                print(f"  Selected {len(P_idx)} prototypes, knee at {self.knee_}")
         else:
-            self.knee_ = len(mg)
-        
-        # Training-time assignments & coverage
-        best_cos, proto_label = self._assignments_cosine(Xl2, P_idx)
-        self.assignments_ = proto_label
-        self.coverage_ = best_cos
-        
-        if self.verbose:
-            print(f"  Selected {len(P_idx)} prototypes, knee at {self.knee_}")
+            self.prototype_indices_ = None
+            self.prototype_rows_ = None
+            self.prototype_features_ = None
+            self.prototype_features_l2_ = None
+            self.marginal_gains_ = np.array([])
+            self.assignments_ = np.zeros(n, dtype=int)
+            self.coverage_ = np.zeros(n)
+            self.knee_ = 0
+            if self.verbose:
+                print(f"\nSkipping prototypical (selected_significance='{self.selected_significance}')")
 
         # ---- Stereotypes (verbose output)
         if self.verbose:
@@ -3318,126 +3321,123 @@ class DataTypical:
         CRITICAL: This method must handle dimension matching correctly for transform.
         MEMORY OPTIMIZED: Cleanup large temporaries during transform.
         """
-        if (self.W_ is None or self.H_ is None) or self.prototype_indices_ is None:
-            raise RuntimeError("Call fit first")
-        
-        # Validate stored dimensions
-        n_archetypes = self.n_archetypes_
-        n_features_model = self.H_.shape[1]
-        
+        run_arch  = self.selected_significance is None or self.selected_significance == "archetypal"
+        run_proto = self.selected_significance is None or self.selected_significance == "prototypical"
+        run_stereo = self.selected_significance is None or self.selected_significance == "stereotypical"
+
+        if run_arch and (self.W_ is None or self.H_ is None):
+            raise RuntimeError(
+                "Archetypal scores requested but archetypes were not fitted. "
+                "If fit() was called with selected_significance='prototypical' or "
+                "'stereotypical', call fit() again with selected_significance=None or "
+                "'archetypal' before requesting archetypal scores."
+            )
+        if run_proto and self.prototype_indices_ is None:
+            raise RuntimeError(
+                "Prototypical scores requested but prototypes were not fitted. "
+                "If fit() was called with selected_significance='archetypal' or "
+                "'stereotypical', call fit() again with selected_significance=None or "
+                "'prototypical' before requesting prototypical scores."
+            )
+
         # ---- Archetypal projections
         X_for_transform = X_scaled.astype(np.float64) if (sp is not None and sp.isspmatrix(X_scaled)) \
             else np.asarray(X_scaled, dtype=np.float64)
-        
+
         n_samples_transform = X_for_transform.shape[0]
-        n_features_transform = X_for_transform.shape[1]
-        
-        # CRITICAL VALIDATION
-        if n_features_transform != n_features_model:
-            raise ValueError(
-                f"Feature dimension mismatch: transform data has {n_features_transform} features, "
-                f"but model was trained with {n_features_model} features"
-            )
-        
-        if self.nmf_model_ is not None:
-            # NMF method: use fitted model to transform
-            W = self.nmf_model_.transform(X_for_transform)
+
+        if run_arch:
+            n_archetypes = self.n_archetypes_
+            n_features_model = self.H_.shape[1]
+            n_features_transform = X_for_transform.shape[1]
+            if n_features_transform != n_features_model:
+                raise ValueError(
+                    f"Feature dimension mismatch: transform data has {n_features_transform} features, "
+                    f"but model was trained with {n_features_model} features"
+                )
         else:
-            # AA method: compute weights from H using least squares
-            H = self.H_
-            
-            # Validate H dimensions before computation
-            assert H.shape == (n_archetypes, n_features_model), \
-                f"H dimension error: {H.shape} vs ({n_archetypes}, {n_features_model})"
-            
-            HHT = H @ H.T
-            assert HHT.shape == (n_archetypes, n_archetypes), \
-                f"HHT dimension error: {HHT.shape} vs ({n_archetypes}, {n_archetypes})"
-            
-            # Regularized inverse
-            HHT_inv = np.linalg.pinv(HHT + 1e-6 * np.eye(HHT.shape[0]))
-            
-            # Matrix multiplication with dimension checking
-            W = X_for_transform @ H.T @ HHT_inv
-            
-            # MEMORY CLEANUP: Free intermediate matrices
-            _cleanup_memory(HHT, HHT_inv)
-            
-            # Ensure non-negative
-            W = np.maximum(W, 0)
+            n_archetypes = 0
         
-        # Validate W dimensions
-        assert W.shape == (n_samples_transform, n_archetypes), \
-            f"W dimension error: {W.shape} vs ({n_samples_transform}, {n_archetypes})"
+        W = None
+        if run_arch:
+            if self.nmf_model_ is not None:
+                # NMF method: use fitted model to transform
+                W = self.nmf_model_.transform(X_for_transform)
+            else:
+                # AA method: compute weights from H using least squares
+                H = self.H_
+
+                assert H.shape == (n_archetypes, n_features_model), \
+                    f"H dimension error: {H.shape} vs ({n_archetypes}, {n_features_model})"
+
+                HHT = H @ H.T
+                assert HHT.shape == (n_archetypes, n_archetypes), \
+                    f"HHT dimension error: {HHT.shape} vs ({n_archetypes}, {n_archetypes})"
+
+                HHT_inv = np.linalg.pinv(HHT + 1e-6 * np.eye(HHT.shape[0]))
+                W = X_for_transform @ H.T @ HHT_inv
+                _cleanup_memory(HHT, HHT_inv)
+                W = np.maximum(W, 0)
+
+            assert W.shape == (n_samples_transform, n_archetypes), \
+                f"W dimension error: {W.shape} vs ({n_samples_transform}, {n_archetypes})"
+
+            W_row_sum = W.sum(axis=1, keepdims=True)
+            W_row_sum[W_row_sum == 0.0] = 1.0
+            W_norm = W / W_row_sum
+            arch_wmax = W_norm.max(axis=1)
+            _cleanup_memory(W_norm, W_row_sum)
         
-        # Normalize W
-        W_row_sum = W.sum(axis=1, keepdims=True)
-        W_row_sum[W_row_sum == 0.0] = 1.0
-        W_norm = W / W_row_sum
-        arch_wmax = W_norm.max(axis=1)
-        
-        # MEMORY CLEANUP: Free W_norm after extracting needed values
-        _cleanup_memory(W_norm, W_row_sum)
-        
-        # Distances to archetypes
-        X_dense = X_for_transform.toarray() if (sp is not None and sp.isspmatrix(X_for_transform)) \
-            else np.asarray(X_for_transform)
-        
-        dists_c = np.sqrt(np.maximum(
-            ((X_dense[:, None, :] - self.H_[None, :, :]) ** 2).sum(axis=2),
-            0.0
-        ))
-        arch_d_min = dists_c.min(axis=1)
-        
-        # MEMORY CLEANUP: Free distance matrix after extracting needed values
-        _cleanup_memory(dists_c)
-        
-        # ---- Prototypes: cosine assignment
-        P_idx = self.prototype_indices_
-        best_cos, proto_label = self._assignments_cosine(X_l2, P_idx)
-        
-        # Euclidean distance to prototypes
-        X_euc = X_scaled.toarray().astype(np.float64, copy=False) \
-            if (sp is not None and sp.isspmatrix(X_scaled)) else np.asarray(X_scaled, dtype=np.float64)
-        P_mat = X_euc[P_idx] if P_idx.max() < len(X_euc) else self.W_[P_idx]
-        
-        best_euc = _euclidean_min_to_set_dense(X_euc, P_mat, max_memory_mb=self.max_memory_mb)
-        
-        # MEMORY CLEANUP: Free P_mat after distance computation
-        _cleanup_memory(P_mat)
-        
-        norm95 = np.percentile(best_euc, 95) or 1.0
-        proto_d_norm95 = np.clip(best_euc / norm95, 0.0, 1.0)
-        
+        X_euc = None
+        if run_arch or run_proto:
+            X_euc = X_scaled.toarray().astype(np.float64, copy=False) \
+                if (sp is not None and sp.isspmatrix(X_scaled)) else np.asarray(X_scaled, dtype=np.float64)
+
+        if run_proto:
+            # ---- Prototypes: cosine assignment
+            P_idx = self.prototype_indices_
+            best_cos, proto_label = self._assignments_cosine(X_l2, P_idx)
+
+            # Use stored prototype feature vectors so transform on new data is correct
+            if self.prototype_features_ is not None:
+                P_mat = self.prototype_features_
+            else:
+                P_mat = X_euc[P_idx]
+
+            best_euc = _euclidean_min_to_set_dense(X_euc, P_mat, max_memory_mb=self.max_memory_mb)
+            _cleanup_memory(P_mat)
+
+            norm95 = np.percentile(best_euc, 95) or 1.0
+            proto_d_norm95 = np.clip(best_euc / norm95, 0.0, 1.0)
+
         # ---- Compute ranks
-        # Archetypal rank
-        eps = 1e-12
-        col_min = X_euc.min(axis=0)
-        col_max = X_euc.max(axis=0)
-        hits_edge = (col_min <= eps) & (col_max >= 1.0 - eps)
-        idxs = np.where(hits_edge)[0]
-        if idxs.size >= 2:
-            var = X_euc[:, idxs].var(axis=0)
-            take = idxs[np.argsort(-var)[:2]]
+        if run_arch:
+            eps = 1e-12
+            col_min = X_euc.min(axis=0)
+            col_max = X_euc.max(axis=0)
+            hits_edge = (col_min <= eps) & (col_max >= 1.0 - eps)
+            idxs = np.where(hits_edge)[0]
+            if idxs.size >= 2:
+                var = X_euc[:, idxs].var(axis=0)
+                take = idxs[np.argsort(-var)[:2]]
+            else:
+                var = X_euc.var(axis=0)
+                take = np.argsort(-var)[:2] if X_euc.shape[1] >= 2 else np.array([0])
+            X2 = X_euc[:, take] if take.size else X_euc[:, :1]
+            m = np.minimum(X2, 1.0 - X2)
+            dmin = np.sqrt(np.sum(m * m, axis=1))
+            denom = math.sqrt(X2.shape[1]) if X2.shape[1] >= 1 else 1.0
+            corner_score = 1.0 - np.clip(dmin / denom, 0.0, 1.0)
+            archetypal_score = arch_wmax * 0.7 + corner_score * 0.3
+            _cleanup_memory(X2, col_min, col_max, corner_score)
         else:
-            var = X_euc.var(axis=0)
-            take = np.argsort(-var)[:2] if X_euc.shape[1] >= 2 else np.array([0])
-        X2 = X_euc[:, take] if take.size else X_euc[:, :1]
-        m = np.minimum(X2, 1.0 - X2)
-        dmin = np.sqrt(np.sum(m * m, axis=1))
-        denom = math.sqrt(X2.shape[1]) if X2.shape[1] >= 1 else 1.0
-        corner_score = 1.0 - np.clip(dmin / denom, 0.0, 1.0)
-        
-        archetypal_score = arch_wmax * 0.7 + corner_score * 0.3
-        
-        # MEMORY CLEANUP: Free intermediate arrays
-        _cleanup_memory(X2, col_min, col_max, corner_score)
-        
-        # Prototypical rank
-        prototypical_score = (1.0 - proto_d_norm95) * 0.5 + best_cos * 0.5
-        
-        # Stereotypical rank
-        stereotypical_scores = self._compute_stereotypical_rank(X_scaled, index, stereotype_source)
+            archetypal_score = np.full(n_samples_transform, np.nan)
+
+        prototypical_score = (1.0 - proto_d_norm95) * 0.5 + best_cos * 0.5 \
+            if run_proto else np.full(n_samples_transform, np.nan)
+
+        stereotypical_scores = self._compute_stereotypical_rank(X_scaled, index, stereotype_source) \
+            if run_stereo else np.full(n_samples_transform, np.nan)
         
         # ---- Build output DataFrame (only keep rank columns)
         out = pd.DataFrame(
@@ -3450,24 +3450,30 @@ class DataTypical:
         )
         
         # MEMORY CLEANUP: Force GC before returning (transform often called repeatedly)
-        _cleanup_memory(X_dense, X_euc, W, force_gc=True)
+        _cleanup_memory(X_for_transform, X_euc, W, force_gc=True)
         
         return out
 
     # ------------------------------------------------------------
     def _assignments_cosine(
-        self, 
-        X_l2: ArrayLike, 
+        self,
+        X_l2: ArrayLike,
         prototype_indices: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Compute cosine similarity assignments to prototypes.
-        
+
         OPTIMIZED: Uses JIT-compiled function for 2-3× speedup.
+        Uses stored prototype L2 rows so transform on new data is correct.
         """
         # Convert to dense if needed
         Xl2_dense = X_l2.toarray() if (sp is not None and sp.isspmatrix(X_l2)) else np.asarray(X_l2, dtype=np.float64)
-        P_l2 = Xl2_dense[prototype_indices]
+        # Use stored L2 prototype rows (fitted training rows); fall back to indexing
+        # current data only when prototype_features_l2_ is not available (e.g. legacy).
+        if self.prototype_features_l2_ is not None:
+            P_l2 = self.prototype_features_l2_
+        else:
+            P_l2 = Xl2_dense[prototype_indices]
         
         n_samples = Xl2_dense.shape[0]
         n_protos = len(prototype_indices)
