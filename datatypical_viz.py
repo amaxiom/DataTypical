@@ -1,5 +1,5 @@
 """
-DataTypical v0.7 - Visualization Module
+DataTypical v0.7.6 - Visualization Module
 ========================================
 
 Publication-quality visualizations for dual-perspective analysis:
@@ -24,6 +24,7 @@ Date: January 2026
 
 import numpy as np
 import pandas as pd
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import LinearSegmentedColormap
@@ -82,12 +83,12 @@ def get_top_sample(
     >>> top_5 = get_top_sample(results, 'prototypical_rank', n=5)
     """
     if rank_column not in results.columns:
-        print(f"âš  Column '{rank_column}' not found in results")
+        print(f"⚠ Column '{rank_column}' not found in results")
         return None
-    
+
     # Check if column is all NaN (formative data not available)
     if results[rank_column].isna().all():
-        print(f"âš  Column '{rank_column}' has no data (likely fast_mode=True)")
+        print(f"⚠ Column '{rank_column}' has no data (likely fast_mode=True or selected_significance excludes this type)")
         
         # Provide helpful message based on column name
         if 'shapley_rank' in rank_column:
@@ -224,9 +225,10 @@ def significance_plot(
     # Check if formative data is available (could be None in fast_mode)
     if results[formative_col].isna().all():
         # Print informative message and skip plot
-        print(f"\nâš  Skipping significance plot:")
-        print(f"  Formative data ('{formative_col}') not available (fast_mode=True)")
-        print(f"  This plot requires fast_mode=False to compute formative Shapley values")
+        print(f"\n⚠ Skipping significance plot:")
+        print(f"  Formative data ('{formative_col}') not available")
+        print(f"  Possible reasons: fast_mode=True, or selected_significance excludes '{significance}'")
+        print(f"  To enable: DataTypical(shapley_mode=True, fast_mode=False)")
         
         # Return None or empty axes depending on whether axes was provided
         if ax is None:
@@ -307,14 +309,14 @@ def significance_plot(
             # Create color mapping
             if n_categories == 2:
                 # BINARY: purple (viridis[0.0]) for lower, green (viridis[0.6]) for higher
-                viridis_cmap = plt.cm.get_cmap('viridis')
+                viridis_cmap = matplotlib.colormaps.get_cmap('viridis')
                 color_map = {
                     unique_values[0]: viridis_cmap(0.0),     # purple for lower value
                     unique_values[1]: viridis_cmap(0.66)     # green for higher value
                 }
             else:
                 # MULTI-CLASS: discrete viridis palette
-                viridis_cmap = plt.cm.get_cmap('viridis', n_categories)
+                viridis_cmap = matplotlib.colormaps.get_cmap('viridis').resampled(n_categories)
                 color_map = {val: viridis_cmap(i) for i, val in enumerate(unique_values)}
             
             # Create marker mapping if needed
@@ -544,16 +546,16 @@ def heatmap(
     # Check if data is available
     if Phi is None:
         print(f"\n⚠ Skipping {significance} explanations heatmap:")
-        print(f"  Explanations data not available")
-        
+        print(f"  Explanations data not available for '{significance}'")
+        print(f"  Possible reasons: shapley_mode=False, or selected_significance excludes '{significance}'")
         if significance == 'stereotypical':
             print(f"  Note: Stereotypical also requires stereotype_column to be set")
-        
+
         print(f"\n  To enable this plot, refit with:")
         if significance == 'stereotypical':
             print(f"    DataTypical(shapley_mode=True, stereotype_column='<column>')")
         else:
-            print(f"    DataTypical(shapley_mode=True)")
+            print(f"    DataTypical(shapley_mode=True)  # or set selected_significance='{significance}'")
         
         # Return empty axes with message
         if ax is None:
@@ -581,7 +583,7 @@ def heatmap(
             # Check if formative data is available
             if results[rank_col].isna().all():
                 print(f"\n⚠ Warning: order='formative' requested but formative data not available")
-                print(f"  Falling back to ordes='actual'")
+                print(f"  Falling back to order='actual'")
                 rank_col = f"{significance}_rank"
                 order = 'actual'
         else:
@@ -648,9 +650,16 @@ def heatmap(
         else:
             sample_labels = [f"Sample {s}" for s in samples]
     
+    # Guard: feature metadata only available for tabular (not text/graph) fits
+    if not hasattr(dt_fitted, 'feature_columns_') or dt_fitted.feature_columns_ is None:
+        raise RuntimeError(
+            "heatmap() requires a tabular DataTypical fit. "
+            "Feature names are not available for text or graph data."
+        )
+
     # Get feature names
     feature_names = [dt_fitted.feature_columns_[i] for i, keep in enumerate(dt_fitted.keep_mask_) if keep]
-    
+
     # ALWAYS order features by global importance (average across ALL samples)
     global_importance = np.abs(Phi).mean(axis=0)
     feature_order = np.argsort(global_importance)[::-1]
@@ -803,10 +812,23 @@ def profile_plot(
     if order not in valid_order:
         raise ValueError(f"order must be one of {valid_order}, got '{order}'")
     
+    # Guard: feature metadata only available for tabular (not text/graph) fits
+    if not hasattr(dt_fitted, 'feature_columns_') or dt_fitted.feature_columns_ is None:
+        raise RuntimeError(
+            "profile_plot() requires a tabular DataTypical fit. "
+            "Feature names are not available for text or graph data."
+        )
+
     # Get explanations for this sample
     explanations = dt_fitted.get_shapley_explanations(sample_idx)
+    if significance not in explanations:
+        raise RuntimeError(
+            f"No explanations available for '{significance}'. "
+            f"Refit with DataTypical(shapley_mode=True) and ensure "
+            f"selected_significance is None or includes '{significance}'."
+        )
     shapley_values = explanations[significance]
-    
+
     # Get feature names
     feature_names = [dt_fitted.feature_columns_[i] for i, keep in enumerate(dt_fitted.keep_mask_) if keep]
     
@@ -825,6 +847,11 @@ def profile_plot(
             Phi_explanations = dt_fitted.Phi_stereotypical_explanations_
         
         # Calculate global importance (average across all samples)
+        if Phi_explanations is None:
+            raise RuntimeError(
+                f"Global ordering requires {significance} explanations, which are not available. "
+                f"Use order='local', or refit ensuring selected_significance includes '{significance}'."
+            )
         importance = np.mean(np.abs(Phi_explanations), axis=0)
         ordering_type = "global"
     
@@ -837,6 +864,11 @@ def profile_plot(
     
     # Get normalized feature values for coloring
     # Need to get the actual feature values for this sample
+    if not hasattr(dt_fitted, '_df_original_fit') or dt_fitted._df_original_fit is None:
+        raise RuntimeError(
+            "profile_plot() requires original tabular data to be retained. "
+            "This is not available for text or graph fits."
+        )
     original_data = dt_fitted._df_original_fit
     numeric_cols = [dt_fitted.feature_columns_[i] for i, keep in enumerate(dt_fitted.keep_mask_) if keep]
     
@@ -873,7 +905,7 @@ def profile_plot(
         fig, ax = plt.subplots(figsize=figsize)
     
     # Create color array from normalized feature values
-    colors = plt.cm.get_cmap(cmap)(normalized_sorted)
+    colors = matplotlib.colormaps.get_cmap(cmap)(normalized_sorted)
     
     # Create bar plot - use signed Shapley values (can be negative)
     x_pos = np.arange(len(features_sorted))
