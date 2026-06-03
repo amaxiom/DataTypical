@@ -1,5 +1,5 @@
 """
-DataTypical v0.7.6 - Visualization Module
+DataTypical v0.7.7 - Visualization Module
 ========================================
 
 Publication-quality visualizations for dual-perspective analysis:
@@ -83,12 +83,12 @@ def get_top_sample(
     >>> top_5 = get_top_sample(results, 'prototypical_rank', n=5)
     """
     if rank_column not in results.columns:
-        print(f"⚠ Column '{rank_column}' not found in results")
+        print(f"Warning: Column '{rank_column}' not found in results")
         return None
 
     # Check if column is all NaN (formative data not available)
     if results[rank_column].isna().all():
-        print(f"⚠ Column '{rank_column}' has no data (likely fast_mode=True or selected_significance excludes this type)")
+        print(f"Warning: Column '{rank_column}' has no data (likely fast_mode=True or selected_significance excludes this type)")
         
         # Provide helpful message based on column name
         if 'shapley_rank' in rank_column:
@@ -225,7 +225,7 @@ def significance_plot(
     # Check if formative data is available (could be None in fast_mode)
     if results[formative_col].isna().all():
         # Print informative message and skip plot
-        print(f"\n⚠ Skipping significance plot:")
+        print(f"\nWarning: Skipping significance plot:")
         print(f"  Formative data ('{formative_col}') not available")
         print(f"  Possible reasons: fast_mode=True, or selected_significance excludes '{significance}'")
         print(f"  To enable: DataTypical(shapley_mode=True, fast_mode=False)")
@@ -276,19 +276,19 @@ def significance_plot(
         
         # Determine if discrete or continuous
         if not is_numeric:
-            # Non-numeric → discrete
+            # Non-numeric -> discrete
             is_discrete = True
             use_markers = False
         elif n_unique < 6:
-            # Numeric with <6 values → discrete
+            # Numeric with <6 values -> discrete
             is_discrete = True
             use_markers = False
         elif 6 <= n_unique <= 12:
-            # Numeric with 6-12 values → discrete with markers
+            # Numeric with 6-12 values -> discrete with markers
             is_discrete = True
             use_markers = True
         else:
-            # Numeric with >12 values → continuous
+            # Numeric with >12 values -> continuous
             is_discrete = False
             use_markers = False
         
@@ -545,7 +545,7 @@ def heatmap(
     
     # Check if data is available
     if Phi is None:
-        print(f"\n⚠ Skipping {significance} explanations heatmap:")
+        print(f"\nWarning: Skipping {significance} explanations heatmap:")
         print(f"  Explanations data not available for '{significance}'")
         print(f"  Possible reasons: shapley_mode=False, or selected_significance excludes '{significance}'")
         if significance == 'stereotypical':
@@ -582,7 +582,7 @@ def heatmap(
             
             # Check if formative data is available
             if results[rank_col].isna().all():
-                print(f"\n⚠ Warning: order='formative' requested but formative data not available")
+                print(f"\nWarning: order='formative' requested but formative data not available")
                 print(f"  Falling back to order='actual'")
                 rank_col = f"{significance}_rank"
                 order = 'actual'
@@ -614,7 +614,7 @@ def heatmap(
                 pass
         
         if len(Phi_subset_list) == 0:
-            print(f"\n⚠ Error: None of the top {top_n} {significance} instances have explanations")
+            print(f"\nError: None of the top {top_n} {significance} instances have explanations")
             print(f"  This can happen when shapley_top_n is too small")
             if ax is None:
                 fig, ax = plt.subplots(figsize=figsize)
@@ -629,7 +629,7 @@ def heatmap(
         if order == 'formative':
             zero_count = (Phi_subset == 0).all(axis=1).sum()
             if zero_count > 0:
-                print(f"\n⚠ Warning: {zero_count}/{len(sample_labels)} top formative {significance} instances have zero Shapley values")
+                print(f"\nWarning: {zero_count}/{len(sample_labels)} top formative {significance} instances have zero Shapley values")
                 print(f"  This occurs when a formative instance is not in the top {significance} instances")
                 print(f"  (determined by shapley_top_n parameter)")
                 print(f"  These instances CREATE structure but are not themselves highly {significance}")

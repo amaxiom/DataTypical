@@ -131,19 +131,37 @@ for idx in critical.index:
 
 ## Performance
 
-### Speed Benchmarks
+### Formative-Shapley speed (v0.7.7)
 
-| Dataset Size | Without Shapley | With Shapley |
-|--------------|-----------------|--------------|
-| 1,000 samples | ~5 seconds | ~5 minutes |
-| 10,000 samples | ~30 seconds | ~60 minutes |
+In publication mode (`shapley_mode=True`, `fast_mode=False`) the cost of the
+formative-instance computation now scales linearly (archetypal, stereotypical)
+or quadratically (prototypical) in the number of samples, instead of
+quadratically/cubically. Rankings are numerically identical to v0.7.6 — only
+runtime changes.
+
+| Samples | Formative step, v0.7.6 | Formative step, v0.7.7 |
+|---------|------------------------|------------------------|
+| 1,000   | ~40 seconds            | < 0.1 seconds          |
+| 2,000   | ~6.5 minutes           | ~0.3 seconds           |
+| 10,000  | ~13 hours (est.)       | ~8 seconds (est.)      |
+
+*Measured single-threaded, M = 30 permutations, d = 8 features, summed over the
+archetypal, prototypical, and stereotypical value functions. The 10,000-sample
+row is extrapolated from the measured scaling.*
+
+The remaining publication-mode cost is the per-sample feature **explanations**
+(a separate Shapley computation). Bound this with `shapley_top_n` to explain only
+the most significant samples; it is the main lever on full-pipeline runtime once
+the formative step is no longer the bottleneck.
 
 ### Optimization Strategy
 
-**Phase 1**: Fast exploration (`fast_mode=True`, no Shapley)  
-↓ Identify interesting samples  
-**Phase 2**: Detailed analysis (`shapley_mode=True`, subset to interesting samples)  
-↓ Generate explanations and publication figures
+**Phase 1**: Fast exploration (`fast_mode=True`, no Shapley) to identify
+interesting samples.
+
+**Phase 2**: Detailed analysis (`shapley_mode=True`) to generate formative
+rankings, explanations, and publication figures. Set `shapley_top_n` to cap how
+many samples receive feature-level explanations.
 
 ---
 
@@ -304,7 +322,7 @@ If you use DataTypical in your research, please cite:
   title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
   year = {2026},
   url = {https://github.com/amaxiom/DataTypical},
-  version = {0.7.6}
+  version = {0.7.7}
 }
 ```
 
@@ -337,7 +355,12 @@ This dual perspective transforms instance significance from pure ranking into ca
 
 ## Development Status
 
-**Current Version**: 0.7.6
+**Current Version**: 0.7.7
+
+**Recent Updates (v0.7.7)**:
+- Streaming formative-Shapley computation: each Monte Carlo permutation now updates the value functions incrementally along the growing coalition instead of recomputing them from scratch at every step. Per-fit complexity drops from O(M·n²) to O(M·n) for archetypal and stereotypical significance, and from O(M·n³) to O(M·n²) for prototypical. Rankings are numerically identical to v0.7.6 — only runtime changes.
+- The formative step at n = 10,000 now completes in seconds rather than hours, making publication-mode fits on large datasets practical.
+- Console and verbose output is now ASCII-only, so logs and the test suites run cleanly under any terminal encoding (including Windows cp1252).
 
 **Recent Updates (v0.7.6)**:
 - Added `selected_significance` parameter for selective computation of one significance type

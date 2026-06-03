@@ -1,5 +1,5 @@
 """
-DataTypical v0.7.6 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.7.7 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
@@ -12,6 +12,18 @@ Key Innovation:
 Two complementary perspectives:
 1. LOCAL: "This sample IS significant because features X, Y contribute most"
 2. GLOBAL: "This sample CREATES significance by defining the distribution and boundary"
+
+What's new in v0.7.7:
+- Streaming formative-Shapley computation: the per-permutation coalition walk
+  now updates each value function incrementally instead of re-evaluating it from
+  scratch on every prefix. Output is numerically identical (rankings unchanged);
+  only runtime improves.
+    * archetypal / stereotypical: O(M*n^2) -> O(M*n) per fit
+    * prototypical:               O(M*n^3) -> O(M*n^2) per fit
+  In practice the formative step drops from hours to seconds at n=10,000, making
+  publication-mode fits on large datasets tractable.
+- Console output is now ASCII-only (no Unicode glyphs), so verbose logs and the
+  test suites run cleanly under any terminal encoding (e.g. Windows cp1252).
 
 What's new in v0.7.6:
 - selected_significance parameter: compute only one significance type at a time
@@ -221,7 +233,7 @@ def _euclidean_min_to_set_dense(
     """
     Compute minimum Euclidean distance from each row of X to any row in Y.
     
-    OPTIMIZED: Uses Numba JIT for 2-3× speedup and better memory efficiency.
+    OPTIMIZED: Uses Numba JIT for 2-3x speedup and better memory efficiency.
     """
     n, d = X.shape
     m = Y.shape[0]
@@ -288,7 +300,7 @@ def _euclidean_chunk_jit(
     """
     JIT-compiled chunked distance computation using pre-computed norms.
     
-    Computes: sqrt(||x||² + ||y||² - 2⟨x,y⟩) efficiently.
+    Computes: sqrt(||x||^2 + ||y||^2 - 2<x,y>) efficiently.
     """
     n = X.shape[0]
     m = Y_chunk.shape[0]
@@ -735,7 +747,7 @@ class ShapleySignificanceEngine:
         }
         
         if self.verbose:
-            print(f"    ✓ {n_perms_used} perms, additivity error: {additivity_error:.6f}")
+            print(f"    {n_perms_used} perms, additivity error: {additivity_error:.6f}")
         
         # MEMORY CLEANUP: Free shapley_sum before returning Phi (they're different objects)
         _cleanup_memory(shapley_sum)
@@ -860,24 +872,33 @@ class ShapleySignificanceEngine:
         OPTIMIZED: Delegates to JIT-compiled helper for massive speedup.
         """
         n_samples, n_features = X.shape
-        shapley_contrib = np.zeros((n_samples, n_features), dtype=np.float64)
-        
-        # Compute all value function calls first (can't JIT this part due to callable)
+
+        # FAST PATH: formative value functions are decomposable along the
+        # coalition prefix, so the whole vector of prefix values is produced
+        # in one streaming pass (O(n) value work per permutation instead of
+        # O(n) full re-evaluations). Results are identical to the loop below.
+        prefix_fn = _PREFIX_VALUE_FUNCS.get(value_function)
+        if prefix_fn is not None:
+            values = prefix_fn(perm, X, context)
+            return _compute_marginals_jit(perm, values, n_samples, n_features)
+
+        # Generic path: re-evaluate the value function on every prefix.
+        # (can't JIT this part due to the Python callable)
         values = np.zeros(n_samples + 1, dtype=np.float64)
         values[0] = 0.0
-        
+
         for j in range(n_samples):
             subset_indices = perm[:j+1]
             X_subset = X[subset_indices]
-            
+
             if context is not None:
                 values[j+1] = value_function(X_subset, subset_indices, context)
             else:
                 values[j+1] = value_function(X_subset, subset_indices)
-        
+
         # Now use JIT-compiled function to compute marginal contributions
         shapley_contrib = _compute_marginals_jit(perm, values, n_samples, n_features)
-        
+
         return shapley_contrib
 
     def _process_feature_permutation(
@@ -1082,6 +1103,141 @@ def formative_stereotypical_extremeness(
         extremeness = median_dist - subset_dist
     
     return float(extremeness)
+
+
+# ============================================================
+# [D2] Streaming (prefix) value functions for formative Shapley
+# ============================================================
+#
+# Monte-Carlo Shapley walks each permutation through coalitions of size
+# 1, 2, ..., n and needs the value-function result at every prefix. The
+# generic path (ShapleySignificanceEngine._process_single_permutation)
+# re-evaluates the value function from scratch on each prefix, costing
+# O(n) full evaluations per permutation -- i.e. O(M * n^2) (or worse)
+# overall, which is the dominant cost of publication-mode fits.
+#
+# All three formative value functions are decomposable along a growing
+# coalition, so the full vector of prefix values can be produced in a
+# single streaming pass that is mathematically identical to the
+# per-prefix re-evaluation:
+#
+#   archetypal   : value = -mean_k min_{i in S} dist(archetype_k, x_i).
+#                  Adding a point can only lower a running per-archetype
+#                  minimum -> maintain min_dist[k] and update in O(k*d).
+#   stereotypical: value = mean over S of a per-sample scalar term ->
+#                  a running cumulative mean, O(1) per added point.
+#   prototypical : value = mean over S of each member's max cosine
+#                  similarity to another member (diagonal treated as 0).
+#                  Adding a point can only raise an existing member's best
+#                  similarity -> maintain best[i] and a running sum.
+#
+# Each kernel returns ``values`` of length n+1 with values[0] = 0.0,
+# matching the empty-coalition baseline hard-coded in the generic path.
+
+@jit(nopython=True, cache=True)
+def _prefix_archetypal_kernel(perm, X, archetypes):
+    n = X.shape[0]
+    d = X.shape[1]
+    k = archetypes.shape[0]
+    values = np.zeros(n + 1, dtype=np.float64)
+    min_dist = np.full(k, np.inf)
+    for j in range(n):
+        xi = perm[j]
+        for a in range(k):
+            s = 0.0
+            for f in range(d):
+                diff = archetypes[a, f] - X[xi, f]
+                s += diff * diff
+            dist = np.sqrt(s)
+            if dist < min_dist[a]:
+                min_dist[a] = dist
+        msum = 0.0
+        for a in range(k):
+            msum += min_dist[a]
+        values[j + 1] = -(msum / k)
+    return values
+
+
+@jit(nopython=True, cache=True)
+def _prefix_cummean_kernel(perm, terms):
+    n = terms.shape[0]
+    values = np.zeros(n + 1, dtype=np.float64)
+    cum = 0.0
+    for j in range(n):
+        cum += terms[perm[j]]
+        values[j + 1] = cum / (j + 1)
+    return values
+
+
+@jit(nopython=True, cache=True)
+def _prefix_prototypical_kernel(perm, X_l2):
+    n = X_l2.shape[0]
+    d = X_l2.shape[1]
+    values = np.zeros(n + 1, dtype=np.float64)
+    best = np.zeros(n, dtype=np.float64)   # diagonal baseline of 0.0
+    bsum = 0.0                             # running sum of best[0..j]
+    for j in range(1, n):
+        pj = perm[j]
+        newbest = 0.0
+        for t in range(j):
+            pt = perm[t]
+            s = 0.0
+            for f in range(d):
+                s += X_l2[pj, f] * X_l2[pt, f]
+            if s > best[t]:
+                bsum += s - best[t]
+                best[t] = s
+            if s > newbest:
+                newbest = s
+        best[j] = newbest
+        bsum += newbest
+        values[j + 1] = bsum / (j + 1)
+    return values
+
+
+def _prefix_values_archetypal(perm, X, context):
+    archetypes = np.ascontiguousarray(context['archetypes'], dtype=np.float64)
+    X = np.ascontiguousarray(X, dtype=np.float64)
+    return _prefix_archetypal_kernel(perm.astype(np.int64), X, archetypes)
+
+
+def _prefix_values_prototypical(perm, X, context=None):
+    X = np.ascontiguousarray(X, dtype=np.float64)
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms[norms == 0.0] = 1.0
+    X_l2 = np.ascontiguousarray(X / norms, dtype=np.float64)
+    return _prefix_prototypical_kernel(perm.astype(np.int64), X_l2)
+
+
+def _prefix_values_stereotypical(perm, X, context):
+    target_values = np.asarray(context['target_values'], dtype=np.float64)
+    target = context['target']
+    median = context.get('median', float(np.median(target_values)))
+    perm64 = perm.astype(np.int64)
+
+    if target == 'max':
+        terms = np.maximum(target_values - median, 0.0)
+        return _prefix_cummean_kernel(perm64, terms)
+    elif target == 'min':
+        terms = np.maximum(median - target_values, 0.0)
+        return _prefix_cummean_kernel(perm64, terms)
+    else:
+        target_val = float(target)
+        median_dist = abs(median - target_val)
+        terms = np.abs(target_values - target_val)
+        cummean = _prefix_cummean_kernel(perm64, terms)
+        values = median_dist - cummean
+        values[0] = 0.0   # empty coalition baseline (matches generic path)
+        return values
+
+
+# Registry consulted by ShapleySignificanceEngine._process_single_permutation.
+# Keyed by value-function identity so only the formative path is affected.
+_PREFIX_VALUE_FUNCS = {
+    formative_archetypal_pcha_cached:   _prefix_values_archetypal,
+    formative_prototypical_coverage:    _prefix_values_prototypical,
+    formative_stereotypical_extremeness: _prefix_values_stereotypical,
+}
 
 
 # ============================================================
@@ -1861,9 +2017,9 @@ class DataTypical:
             if self.verbose:
                 print("\n" + "="*70)
                 if compute_formative:
-                    print("✓ Shapley Dual-Perspective Analysis Complete")
+                    print("Shapley Dual-Perspective Analysis Complete")
                 else:
-                    print("✓ Shapley Explanations Complete (formative skipped)")
+                    print("Shapley Explanations Complete (formative skipped)")
                 print("="*70)
             
 
@@ -2408,7 +2564,7 @@ class DataTypical:
             "shapley_early_stopping_patience","shapley_early_stopping_tolerance",
             "shapley_compute_formative","fast_mode","archetypal_method",
         ]}
-        cfg["version"] = "0.7.6"
+        cfg["version"] = "0.7.7"
         return cfg
 
     @classmethod
@@ -3187,7 +3343,7 @@ class DataTypical:
         # ---- Helper: kNN density (cosine)
         def _knn_density_cosine(Xl2_arr: np.ndarray, k: int = 10, clip_neg: bool = True) -> np.ndarray:
             k = max(1, min(k, max(1, n - 1)))
-            # Chunked row-wise dot product: caps memory at chunk_size×n instead of n×n.
+            # Chunked row-wise dot product: caps memory at chunk_size x n instead of n x n.
             # Each block is at most ~256 MB regardless of n.
             chunk_size = max(1, min(n, int(256 * 1024 * 1024 // max(1, 8 * n))))
             top_k_means = np.zeros(n)
@@ -3463,7 +3619,7 @@ class DataTypical:
         """
         Compute cosine similarity assignments to prototypes.
 
-        OPTIMIZED: Uses JIT-compiled function for 2-3× speedup.
+        OPTIMIZED: Uses JIT-compiled function for 2-3x speedup.
         Uses stored prototype L2 rows so transform on new data is correct.
         """
         # Convert to dense if needed
