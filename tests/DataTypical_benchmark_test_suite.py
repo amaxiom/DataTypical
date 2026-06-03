@@ -14,7 +14,11 @@ Author: Amanda S. Barnard
 """
 
 import sys
-sys.path.insert(0, '/my/project') # update your path here
+import os
+# Make the local DataTypical source (the parent of this tests/ directory)
+# take import priority over any installed copy, so the suite always tests
+# this working tree regardless of what is pip-installed.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
@@ -51,7 +55,7 @@ def run_benchmark(name, func):
             'result': result
         }
         
-        print(f"\n✓ PASSED in {elapsed:.2f}s")
+        print(f"\nPASSED in {elapsed:.2f}s")
         return True
         
     except Exception as e:
@@ -63,7 +67,7 @@ def run_benchmark(name, func):
             'result': None
         }
         
-        print(f"\n✗ FAILED after {elapsed:.2f}s")
+        print(f"\nFAILED after {elapsed:.2f}s")
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
@@ -121,9 +125,9 @@ def benchmark_small_tabular():
     assert 'archetypal' in explanations, "Missing archetypal explanations"
     assert explanations['archetypal'].sum() != 0, "Explanations should have values"
     
-    print(f"  ✓ Top archetypal: {results['archetypal_rank'].max():.4f}")
-    print(f"  ✓ Explanations working (sum: {explanations['archetypal'].sum():.4f})")
-    print(f"  ✓ Formative correctly skipped (all None)")
+    print(f"  [OK] Top archetypal: {results['archetypal_rank'].max():.4f}")
+    print(f"  [OK] Explanations working (sum: {explanations['archetypal'].sum():.4f})")
+    print(f"  [OK] Formative correctly skipped (all None)")
     
     return results
 
@@ -180,9 +184,9 @@ def benchmark_medium_tabular_publication():
     assert results['archetypal_rank'].max() <= 1.0, "Archetypal rank > 1"
     assert results['archetypal_rank'].min() >= 0.0, "Archetypal rank < 0"
     
-    print(f"  ✓ Archetypal range: [{results['archetypal_rank'].min():.4f}, {results['archetypal_rank'].max():.4f}]")
-    print(f"  ✓ Formative range: [{results['archetypal_shapley_rank'].min():.4f}, {results['archetypal_shapley_rank'].max():.4f}]")
-    print(f"  ✓ Formative attributions working")
+    print(f"  [OK] Archetypal range: [{results['archetypal_rank'].min():.4f}, {results['archetypal_rank'].max():.4f}]")
+    print(f"  [OK] Formative range: [{results['archetypal_shapley_rank'].min():.4f}, {results['archetypal_shapley_rank'].max():.4f}]")
+    print(f"  [OK] Formative attributions working")
     
     return results
 
@@ -233,14 +237,14 @@ def benchmark_large_tabular():
         if exp['archetypal'].sum() != 0:
             nonzero_explanations += 1
     
-    print(f"  ✓ Samples with Shapley explanations (first 200 checked): {nonzero_explanations}")
+    print(f"  [OK] Samples with Shapley explanations (first 200 checked): {nonzero_explanations}")
     assert nonzero_explanations <= 110, f"Too many Shapley values computed: {nonzero_explanations}"
     
     # Formative should be None (fast mode)
     assert results['archetypal_shapley_rank'].isna().all(), "Fast mode formative should be None"
     
-    print(f"  ✓ Subsampling working correctly")
-    print(f"  ✓ Formative correctly skipped")
+    print(f"  [OK] Subsampling working correctly")
+    print(f"  [OK] Formative correctly skipped")
     
     return results
 
@@ -293,8 +297,8 @@ def benchmark_text_small():
     if protein_docs:
         avg_protein_rank = results.loc[protein_docs, 'stereotypical_rank'].mean()
         avg_all_rank = results['stereotypical_rank'].mean()
-        print(f"  ✓ Avg protein doc rank: {avg_protein_rank:.4f}")
-        print(f"  ✓ Avg all doc rank: {avg_all_rank:.4f}")
+        print(f"  [OK] Avg protein doc rank: {avg_protein_rank:.4f}")
+        print(f"  [OK] Avg all doc rank: {avg_all_rank:.4f}")
         assert avg_protein_rank > avg_all_rank, "Keywords not working"
     
     return results
@@ -337,7 +341,7 @@ def benchmark_text_metadata():
     
     # Check correlation between relevance and stereotypical rank
     corr = np.corrcoef(metadata['relevance'], results['stereotypical_rank'])[0, 1]
-    print(f"  ✓ Relevance vs stereotype rank correlation: {corr:.4f}")
+    print(f"  [OK] Relevance vs stereotype rank correlation: {corr:.4f}")
     assert corr > 0.5, f"Weak correlation: {corr}"
     
     return results
@@ -403,8 +407,8 @@ def benchmark_graph_protein_network():
     # Check that hubs have high degree
     hub_degrees = results.loc[hub_proteins, 'degree'].mean()
     all_degrees = results['degree'].mean()
-    print(f"  ✓ Hub avg degree: {hub_degrees:.1f}")
-    print(f"  ✓ Overall avg degree: {all_degrees:.1f}")
+    print(f"  [OK] Hub avg degree: {hub_degrees:.1f}")
+    print(f"  [OK] Overall avg degree: {all_degrees:.1f}")
     assert hub_degrees > all_degrees * 1.5, "Hubs should have higher degree"
     
     return results
@@ -460,8 +464,8 @@ def benchmark_graph_molecular():
     assert 'degree' in results.columns, "Missing degree"
     assert 'pagerank' in results.columns, "Missing pagerank"
     
-    print(f"  ✓ Degree range: [{results['degree'].min()}, {results['degree'].max()}]")
-    print(f"  ✓ PageRank range: [{results['pagerank'].min():.4f}, {results['pagerank'].max():.4f}]")
+    print(f"  [OK] Degree range: [{results['degree'].min()}, {results['degree'].max()}]")
+    print(f"  [OK] PageRank range: [{results['pagerank'].min():.4f}, {results['pagerank'].max():.4f}]")
     
     return results
 
@@ -564,11 +568,11 @@ def benchmark_mode_comparison():
             f"lower correlation expected: {corr:.4f} (threshold: {threshold}). "
             f"This is normal - NMF and AA produce fundamentally different archetypal rankings."
         )
-        print(f"  Note: Different methods ({method_fast} vs {method_pub}) → lower correlation is expected")
+        print(f"  Note: Different methods ({method_fast} vs {method_pub}) -> lower correlation is expected")
     
-    print("\n  ✓ Both modes working correctly")
-    print("  ✓ Fast mode skips formative as expected")
-    print("  ✓ Publication mode computes full dual-perspective")
+    print("\n  [OK] Both modes working correctly")
+    print("  [OK] Fast mode skips formative as expected")
+    print("  [OK] Publication mode computes full dual-perspective")
     
     return {'fast': results_fast, 'pub': results_pub}
 
@@ -607,8 +611,8 @@ total = len(benchmark_results)
 passed = sum(1 for r in benchmark_results.values() if r['status'] == 'PASS')
 failed = total - passed
 
-print(f"\n✓ Successful: {passed}/{total}")
-print(f"✗ Failed: {failed}/{total}")
+print(f"\n[OK] Successful: {passed}/{total}")
+print(f"[FAIL] Failed: {failed}/{total}")
 
 # Modality breakdown
 modalities = {
@@ -627,13 +631,13 @@ for modality, benchmark_nums in modalities.items():
         and result['status'] == 'PASS'
     )
     modality_total = len(benchmark_nums)
-    status = "✓" if modality_passed == modality_total else "✗"
+    status = "[OK]" if modality_passed == modality_total else "[FAIL]"
     print(f"  {status} {modality:20s}: {modality_passed}/{modality_total} benchmark(s)")
 
 # Timing breakdown
 print("\nTIMING BREAKDOWN")
 for name, result in sorted(benchmark_results.items()):
-    status_symbol = "✓" if result['status'] == 'PASS' else "✗"
+    status_symbol = "[OK]" if result['status'] == 'PASS' else "[FAIL]"
     print(f"  {status_symbol} {name:55s}: {result['time']:6.2f}s")
 
 total_time = sum(r['time'] for r in benchmark_results.values())
@@ -642,16 +646,16 @@ print(f"\n  Total time: {total_time:.2f}s")
 # Final verdict
 print("\n" + "="*80)
 if failed == 0:
-    print("✓ ALL BENCHMARKS PASSED")
+    print("[OK] ALL BENCHMARKS PASSED")
     print("="*80)
     print("\nDataTypical v0.7 VALIDATED")
-    print("  • All modalities working (Tabular, Text, Graph)")
-    print("  • Fast mode optimizations functional")
-    print("  • Publication mode dual-perspective working")
-    print("  • Shapley explanations + formative validated")
-    print("  • Auto-detection working as expected")
+    print("  - All modalities working (Tabular, Text, Graph)")
+    print("  - Fast mode optimizations functional")
+    print("  - Publication mode dual-perspective working")
+    print("  - Shapley explanations + formative validated")
+    print("  - Auto-detection working as expected")
 else:
-    print(f"✗ {failed} BENCHMARK(S) FAILED")
+    print(f"[FAIL] {failed} BENCHMARK(S) FAILED")
     print("="*80)
     print("\nFailed benchmarks:")
     for name, result in benchmark_results.items():

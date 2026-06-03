@@ -8,7 +8,11 @@ Author: Amanda S. Barnard
 """
 
 import sys
-sys.path.insert(0, '/my/project') # update your path here
+import os
+# Make the local DataTypical source (the parent of this tests/ directory)
+# take import priority over any installed copy, so the suite always tests
+# this working tree regardless of what is pip-installed.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
@@ -70,7 +74,7 @@ dt_shapley = DataTypical(
 )
 results_shapley = dt_shapley.fit_transform(test_data)
 
-print(f"✓ Data prepared: {n_samples} samples, {n_features} features")
+print(f"[OK] Data prepared: {n_samples} samples, {n_features} features")
 
 # ============================================================================
 # MODULE 1: significance_plot
@@ -93,10 +97,10 @@ try:
     )
     assert ax is not None
     plt.close(fig)
-    print("  ✓ Basic plot created")
+    print("  [OK] Basic plot created")
     mod1_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod1_tests += 1
 
 # Test 1.2: Color by property
@@ -111,10 +115,10 @@ try:
     )
     assert ax is not None
     plt.close(fig)
-    print("  ✓ Color-coded plot created")
+    print("  [OK] Color-coded plot created")
     mod1_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod1_tests += 1
 
 # Test 1.3: Quadrant lines
@@ -131,10 +135,10 @@ try:
     lines = ax.get_lines()
     assert len(lines) >= 2, "Expected quadrant lines"
     plt.close(fig)
-    print("  ✓ Quadrant lines added")
+    print("  [OK] Quadrant lines added")
     mod1_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod1_tests += 1
 
 # Test 1.4: Invalid significance handling
@@ -147,13 +151,13 @@ try:
             significance='nonexistent',
             ax=ax
         )
-        print("  ✗ FAILED: Should raise ValueError")
+        print("  FAILED: Should raise ValueError")
     except ValueError:
-        print("  ✓ Correctly raised ValueError")
+        print("  [OK] Correctly raised ValueError")
         mod1_passed += 1
     plt.close(fig)
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod1_tests += 1
 
 # Test 1.5: All three significance types
@@ -172,13 +176,13 @@ try:
         types_ok += 1
     
     assert types_ok == 3
-    print("  ✓ All three types work")
+    print("  [OK] All three types work")
     mod1_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod1_tests += 1
 
-print(f"\n→ Module 1: {mod1_passed}/{mod1_tests} tests passed")
+print(f"\n-> Module 1: {mod1_passed}/{mod1_tests} tests passed")
 
 # ============================================================================
 # MODULE 2: heatmap
@@ -206,10 +210,10 @@ try:
     title = ax.get_title()
     assert 'archetypal' in title.lower()
     plt.close(fig)
-    print("  ✓ Archetypal heatmap created")
+    print("  [OK] Archetypal heatmap created")
     mod2_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod2_tests += 1
 
 # Test 2.2: Prototypical with formative ordering
@@ -226,10 +230,10 @@ try:
     )
     assert ax is not None
     plt.close(fig)
-    print("  ✓ Prototypical formative heatmap created")
+    print("  [OK] Prototypical formative heatmap created")
     mod2_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod2_tests += 1
 
 # Test 2.3: Stereotypical heatmap
@@ -246,10 +250,10 @@ try:
     )
     assert ax is not None
     plt.close(fig)
-    print("  ✓ Stereotypical heatmap created")
+    print("  [OK] Stereotypical heatmap created")
     mod2_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod2_tests += 1
 
 # Test 2.4: Custom sample selection
@@ -267,10 +271,10 @@ try:
     )
     assert ax is not None
     plt.close(fig)
-    print("  ✓ Custom sample selection works")
+    print("  [OK] Custom sample selection works")
     mod2_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod2_tests += 1
 
 # Test 2.5: Top features filtering
@@ -288,10 +292,10 @@ try:
     )
     assert ax is not None
     plt.close(fig)
-    print("  ✓ Top features filtering works")
+    print("  [OK] Top features filtering works")
     mod2_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod2_tests += 1
 
 # Test 2.6: Error without Shapley
@@ -307,16 +311,16 @@ try:
             top_n=10,
             ax=ax
         )
-        print("  ✗ FAILED: Should raise RuntimeError")
+        print("  FAILED: Should raise RuntimeError")
     except RuntimeError:
-        print("  ✓ Correctly raised RuntimeError")
+        print("  [OK] Correctly raised RuntimeError")
         mod2_passed += 1
     plt.close(fig)
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod2_tests += 1
 
-print(f"\n→ Module 2: {mod2_passed}/{mod2_tests} tests passed")
+print(f"\n-> Module 2: {mod2_passed}/{mod2_tests} tests passed")
 
 # ============================================================================
 # MODULE 3: profile_plot
@@ -343,10 +347,10 @@ try:
     assert ax is not None
     assert 'feature' in ax.get_xlabel().lower()
     plt.close(fig)
-    print("  ✓ Archetypal profile created")
+    print("  [OK] Archetypal profile created")
     mod3_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod3_tests += 1
 
 # Test 3.2: Prototypical profile with global ordering
@@ -365,10 +369,10 @@ try:
     title = ax.get_title()
     assert 'prototypical' in title.lower()
     plt.close(fig)
-    print("  ✓ Prototypical profile created")
+    print("  [OK] Prototypical profile created")
     mod3_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod3_tests += 1
 
 # Test 3.3: Stereotypical profile
@@ -385,10 +389,10 @@ try:
     )
     assert ax is not None
     plt.close(fig)
-    print("  ✓ Stereotypical profile created")
+    print("  [OK] Stereotypical profile created")
     mod3_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod3_tests += 1
 
 # Test 3.4: Zero reference line
@@ -410,10 +414,10 @@ try:
     )
     assert has_zero_line, "Zero reference line not found"
     plt.close(fig)
-    print("  ✓ Zero reference line present")
+    print("  [OK] Zero reference line present")
     mod3_passed += 1
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod3_tests += 1
 
 # Test 3.5: Error without Shapley
@@ -428,16 +432,16 @@ try:
             order='local',
             ax=ax
         )
-        print("  ✗ FAILED: Should raise RuntimeError")
+        print("  FAILED: Should raise RuntimeError")
     except RuntimeError:
-        print("  ✓ Correctly raised RuntimeError")
+        print("  [OK] Correctly raised RuntimeError")
         mod3_passed += 1
     plt.close(fig)
 except Exception as e:
-    print(f"  ✗ FAILED: {e}")
+    print(f"  FAILED: {e}")
 mod3_tests += 1
 
-print(f"\n→ Module 3: {mod3_passed}/{mod3_tests} tests passed")
+print(f"\n-> Module 3: {mod3_passed}/{mod3_tests} tests passed")
 
 # ============================================================================
 # FINAL SUMMARY
@@ -457,22 +461,22 @@ total_passed = sum(m[2] for m in modules)
 
 print(f"\nModules tested: 3/3")
 for name, tests, passed in modules:
-    status = "✓" if tests == passed else "✗"
+    status = "[OK]" if tests == passed else "[FAIL]"
     print(f"  {status} {name}: {passed}/{tests} tests passed")
 
 print(f"\nOverall: {total_passed}/{total_tests} tests passed")
 
 if total_passed == total_tests:
     print("\n" + "="*80)
-    print("✓ ALL VISUALIZATION TESTS PASSED")
+    print("[OK] ALL VISUALIZATION TESTS PASSED")
     print("="*80)
     print("\nVisualization functions validated:")
-    print("  ✓ significance_plot - Dual-perspective scatter")
-    print("  ✓ heatmap - Feature attribution heatmap")
-    print("  ✓ profile_plot - Individual sample profile")
+    print("  [OK] significance_plot - Dual-perspective scatter")
+    print("  [OK] heatmap - Feature attribution heatmap")
+    print("  [OK] profile_plot - Individual sample profile")
 else:
     print("\n" + "="*80)
-    print(f"✗ SOME TESTS FAILED: {total_tests - total_passed} failures")
+    print(f"[FAIL] SOME TESTS FAILED: {total_tests - total_passed} failures")
     print("="*80)
 
 print("\n" + "="*80)

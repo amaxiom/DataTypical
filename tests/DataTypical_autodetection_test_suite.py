@@ -10,7 +10,11 @@ Author: Amanda S. Barnard
 """
 
 import sys
-sys.path.insert(0, '/my/project') # update your path here
+import os
+# Make the local DataTypical source (the parent of this tests/ directory)
+# take import priority over any installed copy, so the suite always tests
+# this working tree regardless of what is pip-installed.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
@@ -61,7 +65,7 @@ def test_tabular_dataframe():
     
     # Check detected type
     assert dt._detected_data_type == 'tabular', f"Expected 'tabular', got '{dt._detected_data_type}'"
-    print(f"  ✓ Detected data type: {dt._detected_data_type}")
+    print(f"  [OK] Detected data type: {dt._detected_data_type}")
     
     # Transform
     print("\n[1b] Transforming...")
@@ -71,16 +75,16 @@ def test_tabular_dataframe():
     assert 'archetypal_rank' in results.columns, "Missing archetypal_rank"
     assert 'prototypical_rank' in results.columns, "Missing prototypical_rank"
     assert 'stereotypical_rank' in results.columns, "Missing stereotypical_rank"
-    print(f"  ✓ Results shape: {results.shape}")
-    print(f"  ✓ Columns: {list(results.columns)[:5]}...")
+    print(f"  [OK] Results shape: {results.shape}")
+    print(f"  [OK] Columns: {list(results.columns)[:5]}...")
     
     # Test fit_transform
     print("\n[1c] Testing fit_transform...")
     results_combined = dt.fit_transform(data)
     assert len(results_combined) == len(data), "Length mismatch"
-    print("  ✓ fit_transform works")
+    print("  [OK] fit_transform works")
     
-    print("\n✓ TEST 1 PASSED: Tabular DataFrame auto-detection works")
+    print("\n[OK] TEST 1 PASSED: Tabular DataFrame auto-detection works")
     return dt, results
 
 
@@ -112,7 +116,7 @@ def test_tabular_array():
     
     # Check detected type
     assert dt._detected_data_type == 'tabular', f"Expected 'tabular', got '{dt._detected_data_type}'"
-    print(f"  ✓ Detected data type: {dt._detected_data_type}")
+    print(f"  [OK] Detected data type: {dt._detected_data_type}")
     
     # Transform
     results = dt.transform(data_array)
@@ -120,9 +124,9 @@ def test_tabular_array():
     # Verify results
     assert len(results) == 50, "Wrong number of results"
     assert 'archetypal_rank' in results.columns, "Missing archetypal_rank"
-    print(f"  ✓ Results shape: {results.shape}")
+    print(f"  [OK] Results shape: {results.shape}")
     
-    print("\n✓ TEST 2 PASSED: Tabular array auto-detection works")
+    print("\n[OK] TEST 2 PASSED: Tabular array auto-detection works")
     return dt, results
 
 
@@ -165,7 +169,7 @@ def test_text_data():
     
     # Check detected type
     assert dt._detected_data_type == 'text', f"Expected 'text', got '{dt._detected_data_type}'"
-    print(f"  ✓ Detected data type: {dt._detected_data_type}")
+    print(f"  [OK] Detected data type: {dt._detected_data_type}")
     
     # Transform
     results = dt.transform(corpus)
@@ -174,10 +178,10 @@ def test_text_data():
     assert len(results) == 100, "Wrong number of results"
     assert 'archetypal_rank' in results.columns, "Missing archetypal_rank"
     assert 'stereotypical_rank' in results.columns, "Missing stereotypical_rank (keywords)"
-    print(f"  ✓ Results shape: {results.shape}")
-    print(f"  ✓ Top stereotypical (by keywords): {results.nlargest(3, 'stereotypical_rank').index.tolist()}")
+    print(f"  [OK] Results shape: {results.shape}")
+    print(f"  [OK] Top stereotypical (by keywords): {results.nlargest(3, 'stereotypical_rank').index.tolist()}")
     
-    print("\n✓ TEST 3 PASSED: Text auto-detection works")
+    print("\n[OK] TEST 3 PASSED: Text auto-detection works")
     return dt, results
 
 
@@ -224,13 +228,13 @@ def test_graph_data():
     
     # Check detected type
     assert dt._detected_data_type == 'graph', f"Expected 'graph', got '{dt._detected_data_type}'"
-    print(f"  ✓ Detected data type: {dt._detected_data_type}")
+    print(f"  [OK] Detected data type: {dt._detected_data_type}")
     
     # Check topology features computed
     assert dt.graph_topology_df_ is not None, "Topology features not computed"
     assert 'degree' in dt.graph_topology_df_.columns, "Missing degree feature"
     assert 'clustering' in dt.graph_topology_df_.columns, "Missing clustering feature"
-    print(f"  ✓ Topology features computed: {list(dt.graph_topology_df_.columns)}")
+    print(f"  [OK] Topology features computed: {list(dt.graph_topology_df_.columns)}")
     
     # Transform
     results = dt.transform(node_features, edges=edges)
@@ -240,10 +244,10 @@ def test_graph_data():
     assert 'archetypal_rank' in results.columns, "Missing archetypal_rank"
     assert 'degree' in results.columns, "Missing degree column in results"
     assert 'clustering' in results.columns, "Missing clustering column in results"
-    print(f"  ✓ Results shape: {results.shape}")
-    print(f"  ✓ Includes degree: {'degree' in results.columns}, clustering: {'clustering' in results.columns}")
+    print(f"  [OK] Results shape: {results.shape}")
+    print(f"  [OK] Includes degree: {'degree' in results.columns}, clustering: {'clustering' in results.columns}")
     
-    print("\n✓ TEST 4 PASSED: Graph auto-detection works")
+    print("\n[OK] TEST 4 PASSED: Graph auto-detection works")
     return dt, results
 
 
@@ -275,14 +279,14 @@ def test_override_detection():
     
     # Check detected type matches config
     assert dt._detected_data_type == 'tabular', f"Expected 'tabular', got '{dt._detected_data_type}'"
-    print(f"  ✓ Used configured data type: {dt._detected_data_type}")
+    print(f"  [OK] Used configured data type: {dt._detected_data_type}")
     
     # Transform
     results = dt.transform(data)
     assert len(results) == 30, "Wrong number of results"
-    print(f"  ✓ Results shape: {results.shape}")
+    print(f"  [OK] Results shape: {results.shape}")
     
-    print("\n✓ TEST 5 PASSED: Manual override works")
+    print("\n[OK] TEST 5 PASSED: Manual override works")
     return dt, results
 
 
@@ -302,21 +306,21 @@ def test_error_handling():
     try:
         dt_invalid = DataTypical(data_type='invalid', fast_mode=True)
         dt_invalid.fit(pd.DataFrame(np.random.randn(10, 2)))
-        print("  ✗ Should have raised ValueError")
+        print("  [FAIL] Should have raised ValueError")
         return False
     except ValueError as e:
-        print(f"  ✓ Correctly raised error: {type(e).__name__}")
+        print(f"  [OK] Correctly raised error: {type(e).__name__}")
     
     # Test 2: Cannot detect type
     print("\n[6b] Testing undetectable input...")
     try:
         dt.fit({"not": "supported"})
-        print("  ✗ Should have raised ValueError")
+        print("  [FAIL] Should have raised ValueError")
         return False
     except ValueError as e:
-        print(f"  ✓ Correctly raised ValueError: {str(e)[:60]}...")
+        print(f"  [OK] Correctly raised ValueError: {str(e)[:60]}...")
     
-    print("\n✓ TEST 6 PASSED: Error handling works correctly")
+    print("\n[OK] TEST 6 PASSED: Error handling works correctly")
     return True
 
 
@@ -337,7 +341,7 @@ def test_all_formats_sequence():
     tabular_data = pd.DataFrame(np.random.randn(20, 3))
     results1 = dt1.fit_transform(tabular_data)
     assert dt1._detected_data_type == 'tabular'
-    print(f"  ✓ Tabular: {len(results1)} results")
+    print(f"  [OK] Tabular: {len(results1)} results")
     
     # Text
     print("\n[7b] Text...")
@@ -345,7 +349,7 @@ def test_all_formats_sequence():
     text_data = ["document " + str(i) for i in range(20)]
     results2 = dt2.fit_transform(text_data)
     assert dt2._detected_data_type == 'text'
-    print(f"  ✓ Text: {len(results2)} results")
+    print(f"  [OK] Text: {len(results2)} results")
     
     # Graph (with varied topology)
     print("\n[7c] Graph...")
@@ -371,9 +375,9 @@ def test_all_formats_sequence():
     results3 = dt3.fit_transform(node_data, edges=edge_data)
     assert dt3._detected_data_type == 'graph'
     assert 'degree' in results3.columns  # Topology feature added
-    print(f"  ✓ Graph: {len(results3)} results (degrees: 1-19)")
+    print(f"  [OK] Graph: {len(results3)} results (degrees: 1-19)")
     
-    print("\n✓ TEST 7 PASSED: All formats work in sequence")
+    print("\n[OK] TEST 7 PASSED: All formats work in sequence")
     return True
 
 
@@ -395,7 +399,7 @@ if __name__ == "__main__":
         test_results['error_handling'] = test_error_handling()
         test_results['sequence'] = test_all_formats_sequence()
     except Exception as e:
-        print(f"\n✗ TEST FAILED: {e}")
+        print(f"\n[FAIL] TEST FAILED: {e}")
         import traceback
         traceback.print_exc()
     
@@ -419,40 +423,40 @@ if __name__ == "__main__":
         if name in test_results:
             result = test_results[name]
             if result is True or (isinstance(result, tuple) and result[0] is not None):
-                status = "✓"
+                status = "[OK]"
                 result_str = "PASS"
             else:
-                status = "✗"
+                status = "[FAIL]"
                 result_str = "FAIL"
         else:
-            status = "✗"
+            status = "[FAIL]"
             result_str = "NOT RUN"
         
         print(f"  {status} {name:20s}: {result_str}")
     
     print("\n" + "="*80)
     if passed == total:
-        print("✓ ALL TESTS PASSED - Auto-Detection Works Perfectly!")
+        print("[OK] ALL TESTS PASSED - Auto-Detection Works Perfectly!")
     else:
-        print(f"✗ {total - passed} TEST(S) FAILED")
+        print(f"[FAIL] {total - passed} TEST(S) FAILED")
     print("="*80)
     
     print("\n" + "="*80)
     print("KEY FINDINGS")
     print("="*80)
     print("""
-✓ Tabular data (DataFrame): Auto-detected correctly
-✓ Tabular data (Array): Auto-detected correctly
-✓ Text data (List of strings): Auto-detected correctly
-✓ Graph data (edges parameter): Auto-detected correctly
-✓ Manual override (data_type parameter): Works correctly
-✓ Error handling: Catches invalid inputs
-✓ Sequential use: All three formats work independently
+[OK] Tabular data (DataFrame): Auto-detected correctly
+[OK] Tabular data (Array): Auto-detected correctly
+[OK] Text data (List of strings): Auto-detected correctly
+[OK] Graph data (edges parameter): Auto-detected correctly
+[OK] Manual override (data_type parameter): Works correctly
+[OK] Error handling: Catches invalid inputs
+[OK] Sequential use: All three formats work independently
 
 DETECTION PRIORITY CONFIRMED:
-  1. Graph: If edges/edge_index parameter present → 'graph'
-  2. Text: If list of strings → 'text'
-  3. Tabular: If DataFrame/array → 'tabular'
+  1. Graph: If edges/edge_index parameter present -> 'graph'
+  2. Text: If list of strings -> 'text'
+  3. Tabular: If DataFrame/array -> 'tabular'
 
 100% REPRODUCIBLE: random_state parameter ensures consistency
     """)

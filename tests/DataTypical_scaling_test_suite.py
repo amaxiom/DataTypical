@@ -15,7 +15,11 @@ Author: Amanda S. Barnard
 """
 
 import sys
-sys.path.insert(0, '/my/project') # update your path here
+import os
+# Make the local DataTypical source (the parent of this tests/ directory)
+# take import priority over any installed copy, so the suite always tests
+# this working tree regardless of what is pip-installed.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
@@ -60,7 +64,7 @@ dt1 = DataTypical(
 results1 = dt1.fit_transform(data)
 time1 = time.time() - start
 
-print(f"✓ Completed in {time1:.2f}s")
+print(f"[OK] Completed in {time1:.2f}s")
 assert dt1.archetypal_method == 'nmf', f"Expected nmf, got {dt1.archetypal_method}"
 assert dt1.shapley_n_permutations == 30, f"Expected 30, got {dt1.shapley_n_permutations}"
 assert dt1.shapley_top_n == 0.5, f"Expected 0.5, got {dt1.shapley_top_n}"
@@ -91,7 +95,7 @@ dt2 = DataTypical(
 results2 = dt2.fit_transform(data)
 time2 = time.time() - start
 
-print(f"✓ Completed in {time2:.2f}s")
+print(f"[OK] Completed in {time2:.2f}s")
 assert dt2.archetypal_method == 'aa', f"Expected aa, got {dt2.archetypal_method}"
 assert dt2.shapley_n_permutations == 100, f"Expected 100, got {dt2.shapley_n_permutations}"
 assert dt2.shapley_top_n is None, f"Expected None, got {dt2.shapley_top_n}"
@@ -138,7 +142,7 @@ print(f"    Base operations: {time_base:.2f}s (NMF, facility location)")
 print(f"    Shapley (fast): {shapley_fast:.2f}s (explanations only)")
 print(f"    Shapley (pub): {shapley_pub:.2f}s (formative + explanations)")
 print(f"  Shapley-only speedup: {shapley_speedup:.1f}x")
-print(f"  ✓ Good speedup - fast mode skips formative computation")
+print(f"  [OK] Good speedup - fast mode skips formative computation")
 
 # ============================================================================
 # Test 3: Custom Override (fraction-based subsampling)
@@ -161,7 +165,7 @@ dt3 = DataTypical(
 )
 results3 = dt3.fit_transform(data)
 
-print(f"✓ Completed")
+print(f"[OK] Completed")
 assert dt3.archetypal_method == 'aa', f"Expected aa"
 assert dt3.shapley_n_permutations == 30, f"Expected 30"
 assert dt3.shapley_top_n == 0.3, f"Expected 0.3"
@@ -195,7 +199,7 @@ assert min_expected <= non_zero_explanations <= max_expected, (
     f"Union count outside expected range: {non_zero_explanations} "
     f"(expected {min_expected}-{max_expected} for top-{n_per_metric} per metric)"
 )
-print(f"  ✓ Union subsampling working correctly (ensures complete coverage)")
+print(f"  [OK] Union subsampling working correctly (ensures complete coverage)")
 
 # ============================================================================
 # Test 4: Verify Ranking Columns
@@ -210,7 +214,7 @@ required_cols_fast = [
 ]
 for col in required_cols_fast:
     assert col in results1.columns, f"Missing column: {col}"
-    print(f"  ✓ {col}")
+    print(f"  [OK] {col}")
 
 # Fast mode should have None for formative columns
 formative_cols = [
@@ -219,7 +223,7 @@ formative_cols = [
 for col in formative_cols:
     assert col in results1.columns, f"Missing column: {col}"
     assert results1[col].isna().all(), f"Fast mode should have None for {col}"
-    print(f"  ✓ {col} (None in fast mode)")
+    print(f"  [OK] {col} (None in fast mode)")
 
 # Publication mode (with formative)
 all_cols = required_cols_fast + formative_cols
@@ -228,7 +232,7 @@ for col in all_cols:
     if col in formative_cols:
         assert not results2[col].isna().any(), f"Publication mode should compute {col}"
 
-print(f"  ✓ Publication mode computes all columns")
+print(f"  [OK] Publication mode computes all columns")
 
 # ============================================================================
 # Test 5: Shapley Explanations
@@ -249,7 +253,7 @@ print(f"  Sample {top_idx}:")
 print(f"    Archetypal: {explanations['archetypal'][:3]}...")
 print(f"    Prototypical: {explanations['prototypical'][:3]}...")
 print(f"    Stereotypical: {explanations['stereotypical'][:3]}...")
-print(f"  ✓ Explanations accessible")
+print(f"  [OK] Explanations accessible")
 
 # ============================================================================
 # Test 6: Cross-Mode Ranking Correlation
@@ -285,9 +289,9 @@ assert corr_arch >= 0.3, f"Archetypal correlation too low: {corr_arch:.4f}"
 assert corr_proto >= 0.98, f"Prototypical correlation too low: {corr_proto:.4f}"
 assert corr_stereo >= 0.98, f"Stereotypical correlation too low: {corr_stereo:.4f}"
 
-print("  ✓ Correlations within expected ranges")
-print("  → Archetypal: 30%+ acceptable (NMF vs AA differ)")
-print("  → Prototypical/Stereotypical: 98%+ expected (same algorithms)")
+print("  [OK] Correlations within expected ranges")
+print("  -> Archetypal: 30%+ acceptable (NMF vs AA differ)")
+print("  -> Prototypical/Stereotypical: 98%+ expected (same algorithms)")
 
 # ============================================================================
 # Test 7: Formative Attributions
@@ -299,10 +303,10 @@ print("-"*80)
 # Fast mode - should error
 try:
     dt1.get_formative_attributions(0)
-    print("  ✗ Should have raised RuntimeError")
+    print("  [FAIL] Should have raised RuntimeError")
     assert False
 except RuntimeError as e:
-    print(f"  ✓ Fast mode correctly raises error: {type(e).__name__}")
+    print(f"  [OK] Fast mode correctly raises error: {type(e).__name__}")
 
 # Publication mode - should work
 top_idx_pub = results2.nlargest(1, 'archetypal_shapley_rank').index[0]
@@ -314,7 +318,7 @@ assert 'prototypical' in attributions, "Missing prototypical attributions"
 print(f"  Sample {top_idx_pub} (top formative):")
 print(f"    Archetypal: {attributions['archetypal'][:3]}...")
 print(f"    Prototypical: {attributions['prototypical'][:3]}...")
-print(f"  ✓ Formative attributions accessible in publication mode")
+print(f"  [OK] Formative attributions accessible in publication mode")
 
 # ============================================================================
 # Test 8: Top-N Overlap
@@ -337,9 +341,9 @@ for col in ['archetypal_rank', 'prototypical_rank', 'stereotypical_rank']:
     print(f"  {col}: {overlap}/20 ({100*overlap/20:.0f}%)")
     assert overlap >= threshold, f"Overlap too low for {col}: {overlap}/20"
 
-print("  ✓ Overlap within expected ranges")
-print("  → Archetypal: 15%+ overlap acceptable (NMF vs AA are fundamentally different)")
-print("  → Prototypical/Stereotypical: 90%+ overlap expected (same algorithm)")
+print("  [OK] Overlap within expected ranges")
+print("  -> Archetypal: 15%+ overlap acceptable (NMF vs AA are fundamentally different)")
+print("  -> Prototypical/Stereotypical: 90%+ overlap expected (same algorithm)")
 
 # ============================================================================
 # Test 9: Scaling Performance Across Dataset Sizes
@@ -411,7 +415,7 @@ print("  " + "-"*60)
 avg_speedup = np.mean([r['speedup'] for r in results_scaling])
 print(f"\n  Average speedup: {avg_speedup:.1f}x")
 assert avg_speedup >= 2.0, f"Average speedup too low: {avg_speedup:.1f}x"
-print(f"  ✓ Consistent ~6x speedup (formative skipped in fast mode)")
+print(f"  [OK] Consistent ~5x speedup (formative skipped in fast mode)")
 
 # ============================================================================
 # Test 10: Shapley Overhead Measurement
@@ -448,9 +452,9 @@ print(f"  With Shapley (fast): {time_with_shapley:.2f}s")
 print(f"  Shapley overhead: {overhead:.1f}x")
 
 if overhead >= 10:
-    print(f"  ⚠ Moderate overhead (>= 10x) - expected for explanations")
+    print(f"  Warning: Moderate overhead (>= 10x) - expected for explanations")
 else:
-    print(f"  ✓ Reasonable overhead (< 10x)")
+    print(f"  [OK] Reasonable overhead (< 10x)")
 
 # ============================================================================
 # Test 11: NMF vs AA Archetypal Method Comparison
@@ -493,9 +497,9 @@ print(f"  NMF speedup: {speedup_nmf:.1f}x")
 print(f"  Archetypal rank correlation: {corr_arch:.4f}")
 
 if corr_arch < 0.8:
-    print(f"  ⚠ Moderate agreement (< 0.8) - methods differ as expected")
+    print(f"  Warning: Moderate agreement (< 0.8) - methods differ as expected")
 else:
-    print(f"  ✓ High agreement (>= 0.8)")
+    print(f"  [OK] High agreement (>= 0.8)")
 
 # ============================================================================
 # Test 12: NMF Consistency Between Fast/Pub Modes
@@ -532,18 +536,18 @@ for col in ['archetypal_rank', 'prototypical_rank', 'stereotypical_rank']:
         print(f"  NMF {col}: {corr:.4f}")
         assert corr > 0.99, f"Same method should be highly consistent: {corr:.4f}"
 
-print(f"  ✓ Same method produces consistent results")
+print(f"  [OK] Same method produces consistent results")
 
 # ============================================================================
 # SUMMARY
 # ============================================================================
 print("\n" + "="*80)
-print("✓ ALL TESTS PASSED")
+print("[OK] ALL TESTS PASSED")
 print("="*80)
 print("\nKey findings:")
-print("  • fast_mode=True skips formative (6x speedup)")
-print("  • fast_mode=False computes formative (comprehensive)")
-print("  • NMF vs AA produce different archetypal rankings (expected)")
-print("  • Fraction-based subsampling provides consistent speedup")
-print("  • Explanations work in both modes")
+print("  - fast_mode=True skips formative (6x speedup)")
+print("  - fast_mode=False computes formative (comprehensive)")
+print("  - NMF vs AA produce different archetypal rankings (expected)")
+print("  - Fraction-based subsampling provides consistent speedup")
+print("  - Explanations work in both modes")
 print("="*80)
