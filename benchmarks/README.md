@@ -1,4 +1,4 @@
-# Structural-significance benchmarks (DataTypical v0.8.0)
+# Structural-significance benchmarks (DataTypical v0.7.7)
 
 Focused, corrected re-do of the Appendix A/C structural experiments. These
 scripts answer one question cleanly:
