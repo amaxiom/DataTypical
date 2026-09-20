@@ -1,4 +1,4 @@
-# DataTypical v0.7 - Test Suite Guide
+# DataTypical - Test Suite Guide
 
 ## Overview
 
@@ -7,6 +7,65 @@ This document provides comprehensive documentation for the DataTypical v0.7 test
 **Total Coverage:** 62 tests across 5 test suites  
 **Execution Time:** 3-5 minutes (all suites)  
 **Reproducibility:** 100% deterministic with random_state=42
+
+---
+
+## The pytest suite (added in v0.8.0)
+
+This is the layer to run routinely, and it is the release gate: 444 tests,
+99.5% statement coverage, a few minutes end to end.
+
+```bash
+python -m pytest -q
+```
+
+`pytest.ini` handles discovery. It collects the `test_*.py` modules plus the two
+older suites that are already written as pytest tests. The benchmark, scaling
+and visualization suites are scripts rather than pytest modules and are run
+separately, as described further down.
+
+| module | what it covers |
+| --- | --- |
+| `test_defects_v080.py` | regression tests for every defect fixed in v0.8.0, each reproducing the original failure |
+| `test_internals.py` | numeric helpers, distance kernels, facility location, the Shapley engine, value functions |
+| `test_api.py` | the public API across tabular, text and graph data, config round-tripping, error paths |
+| `test_viz.py` | `datatypical_viz`, under the Agg backend |
+| `test_coverage_completion.py` | import fallbacks, verbose branches, graph topology features |
+| `test_final_coverage.py` | parallel backends, dtype fallbacks, degenerate geometry |
+| `test_viz_completion.py` | the visualization diagnostics that fire when explanations are missing |
+| `test_packaging.py` | release metadata consistency and staging parity |
+| `DataTypical_unit_test_suite.py` | the original 34 unit tests, still collected |
+| `DataTypical_autodetection_test_suite.py` | data type detection |
+
+### Coverage
+
+Measure broadly and filter at report time. Narrowing coverage to a single module
+on this machine corrupts numpy sentinels and makes passing tests fail, so do not
+replace this with `--cov=datatypical.py`. Disabling the numba JIT lets coverage
+trace the compiled kernels.
+
+```bash
+NUMBA_DISABLE_JIT=1 python -m coverage run -m pytest -q
+python -m coverage report
+```
+
+`.coveragerc` sets the source to the project root and filters the report down to
+`datatypical.py` and `datatypical_viz.py`.
+
+Ten statements in `datatypical.py` are unreachable and stay uncovered on
+purpose. They are listed under "Known gaps" in `CHANGELOG.md`.
+
+### The script suites
+
+Run these by hand when preparing a release. They print their own summaries
+rather than asserting, and they take longer.
+
+```bash
+cd tests
+python DataTypical_benchmark_test_suite.py       # 8 benchmarks, all modalities
+python DataTypical_scaling_test_suite.py         # 12 scaling and mode checks
+python DataTypical_visualization_test_suite.py   # 16 figure checks
+```
 
 ---
 

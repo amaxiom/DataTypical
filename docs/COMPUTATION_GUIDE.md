@@ -1,4 +1,4 @@
-# DataTypical v0.7.6 - Computation Guide
+# DataTypical v0.7.7 - Computation Guide
 
 ## Table of Contents
 
@@ -39,6 +39,8 @@ The key innovation is the Shapley-based dual perspectives introduced in v0.6:
 - **Explanations**: Feature-level attributions explaining WHY each sample is significant
 
 Version 0.7 introduced `fast_mode` for rapid exploration with 30x speedup versus publication-quality analysis.
+
+Version 0.7.7 reformulates the formative-Shapley computation as a streaming pass. The Monte Carlo permutation walk previously re-evaluated each value function from scratch on every coalition prefix, costing O(n) full evaluations per permutation. Because all three formative value functions are decomposable along a growing coalition, the full vector of prefix values is now produced in a single incremental pass that is numerically identical to the per-prefix evaluation. Per-fit complexity drops from O(M·n^2) to O(M·n) for archetypal and stereotypical significance, and from O(M·n^3) to O(M·n^2) for prototypical significance. Rankings are unchanged from v0.7.6; only runtime improves (the formative step at n = 10,000 falls from hours to seconds). See [Shapley Value Computation](#shapley-value-computation).
 
 Version 0.7.6 introduces `selected_significance` for selective computation of one significance type, fixes prototype feature storage so `transform()` on new data uses the correct training prototype vectors (not indices into the new data), enables full Shapley analysis (formative + explanations) on text data paths, fixes iterator exhaustion in all text fit/transform methods, and corrects a local/global index mismatch in stereotypical Shapley explanations when subsampling is active.
 
@@ -617,6 +619,20 @@ for perm in permutations:
 
 Phi = marginal / n_permutations
 ```
+
+### Streaming Prefix Evaluation (v0.7.7)
+
+The naive loop above re-evaluates the value function on the coalition `S` at every position in every permutation. For sample-level formative Shapley this is O(n) full evaluations per permutation, and each evaluation is itself at least O(n) in subset size, so the formative step dominates publication-mode runtime.
+
+All three formative value functions are decomposable along a growing coalition, so the whole vector of prefix values `V(perm[:1]), V(perm[:2]), ..., V(perm[:n])` can be produced in a single incremental pass per permutation. The result is numerically identical to per-prefix re-evaluation (verified to floating-point tolerance), so rankings do not change.
+
+| Value function | Incremental update as one point is added | Per-permutation cost |
+|----------------|------------------------------------------|----------------------|
+| Archetypal (cached) | Running per-archetype minimum distance (a new point can only lower a minimum) | O(n · n_archetypes · d) |
+| Stereotypical | Running cumulative mean of a per-sample scalar term | O(n) |
+| Prototypical | Running best similarity per coalition member plus a running sum | O(n^2 · d) |
+
+Overall per-fit complexity therefore falls from O(M·n^2) to O(M·n) for archetypal and stereotypical significance, and from O(M·n^3) to O(M·n^2) for prototypical significance, where M is the number of permutations. The streaming kernels are Numba-compiled, with the original per-prefix path retained as a fallback for any other value function.
 
 ### Value Functions
 

@@ -1,6 +1,6 @@
 # DataTypical Package Summary
 
-**Version 0.7.6** | Comprehensive technical reference
+**Version 0.7.7** | Comprehensive technical reference
 
 ---
 
@@ -13,6 +13,11 @@ DataTypical is a Python library for explainable instance significance discovery 
 **Supported Data Types**: Tabular, text, and graph networks through unified API with automatic detection.
 
 ---
+
+## What's New in v0.7.7
+
+- **Streaming formative-Shapley computation**: Each Monte Carlo permutation now updates the value functions incrementally along the growing coalition instead of re-evaluating them from scratch at every prefix. Per-fit complexity drops from O(M·n²) to O(M·n) for archetypal and stereotypical significance, and from O(M·n³) to O(M·n²) for prototypical significance. The formative step at n = 10,000 falls from hours to seconds. Output is numerically identical to v0.7.6 — rankings do not change.
+- **ASCII-only console output**: Verbose logs and the bundled test suites no longer emit Unicode glyphs, so they run cleanly under any terminal encoding (including Windows cp1252).
 
 ## What's New in v0.7.6
 

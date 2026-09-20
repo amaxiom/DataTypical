@@ -1,6 +1,6 @@
 # DataTypical Quick Reference
 
-**Version 0.7.6** | Daily reference for exploring instance significance
+**Version 0.7.7** | Daily reference for exploring instance significance
 
 ---
 

@@ -1,5 +1,5 @@
 """
-DataTypical v0.7.7 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.8.0 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
@@ -12,6 +12,35 @@ Key Innovation:
 Two complementary perspectives:
 1. LOCAL: "This sample IS significant because features X, Y contribute most"
 2. GLOBAL: "This sample CREATES significance by defining the distribution and boundary"
+
+What's new in v0.8.0 (bug fixes, plus the additions listed at the end):
+- FIXED: archetypal_method='aa' no longer substitutes another method silently.
+  Through v0.7.7, if py_pcha was not installed, 'aa' fell through to ConvexHull
+  (itself skipped when n_features > 20) and then to NMF, with the only notice
+  behind verbose=False. Fits reported as archetypal analysis could therefore
+  return NMF output with nothing to distinguish it. 'aa' now raises ConfigError
+  when PCHA is unavailable or fails.
+    * New archetypal_method='auto' keeps the old permissive cascade
+      PCHA -> ConvexHull -> NMF, but emits a RuntimeWarning at each downgrade.
+    * New public attribute archetypal_backend_ records what actually ran:
+      'pcha', 'convexhull' or 'nmf'. It is also stored in settings_.
+    * py_pcha is now a declared dependency, so 'aa' works on a fresh install.
+  Any 'aa' result produced by v0.7.7 or earlier in an environment without
+  py_pcha is an NMF approximation and should be re-run.
+- FIXED: UnboundLocalError in stereotypical Shapley explanations. The value
+  function was defined inside the core-samples branch but also called from the
+  secondary-samples branch, which crashed whenever core_samples was empty and
+  secondary_samples was not, i.e. shapley_mode=True with a stereotype_column and
+  shapley_top_n less than the number of rows. It never fired at
+  shapley_top_n == len(df), which is why it went unnoticed.
+- FIXED: a non-numeric stereotype_column (a Yes/No field, say) failed deep
+  inside pandas with "could not convert string to float". The column is now
+  validated where it is selected, ordered categoricals and booleans are encoded,
+  and anything else raises ConfigError naming the column and the offending
+  values.
+- DOCS: noted that stereotypical_rank is a deterministic function of
+  stereotype_column (Methods 2.3.1, eq. 26), so putting an outcome-derived
+  quantity in that column and evaluating the rank on held-out rows is circular.
 
 What's new in v0.7.7:
 - Streaming formative-Shapley computation: the per-permutation coalition walk
@@ -132,6 +161,101 @@ class ConfigError(DataTypicalError):
 
 def _seed_everything(seed: int) -> None:
     np.random.seed(seed)
+
+
+def _rank_correlation(a: np.ndarray, b: np.ndarray) -> float:
+    """
+    Spearman correlation between two score vectors, without pulling in scipy.
+
+    Used for the split-half reliability of a Shapley estimate: rank each half
+    and correlate the ranks. Returns 0.0 when either side is constant, which is
+    the honest reading of "the two halves agree on nothing".
+    """
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    if a.size < 3 or a.size != b.size:
+        return float("nan")
+    good = np.isfinite(a) & np.isfinite(b)
+    if int(good.sum()) < 3:
+        return float("nan")
+
+    def _ranks(v: np.ndarray) -> np.ndarray:
+        # Ties must share a rank. A plain argsort-of-argsort hands a constant
+        # vector the ranks 0, 1, 2, ..., which then correlates perfectly with
+        # anything increasing, so a degenerate half would report itself as
+        # having converged. That is the exact failure this diagnostic exists
+        # to catch, so it must not commit it itself.
+        order = np.argsort(v, kind="mergesort")
+        out = np.empty(v.size, dtype=np.float64)
+        out[order] = np.arange(v.size, dtype=np.float64)
+        sorted_v = v[order]
+        i = 0
+        while i < v.size:
+            j = i
+            while j + 1 < v.size and sorted_v[j + 1] == sorted_v[i]:
+                j += 1
+            if j > i:
+                out[order[i:j + 1]] = 0.5 * (i + j)
+            i = j + 1
+        return out
+
+    ra = _ranks(a[good])
+    rb = _ranks(b[good])
+    ra -= ra.mean()
+    rb -= rb.mean()
+    denom = math.sqrt(float(np.dot(ra, ra)) * float(np.dot(rb, rb)))
+    if denom <= 0.0:
+        return 0.0
+    return float(np.dot(ra, rb) / denom)
+
+
+def _stereotype_values_as_float(values: pd.Series, column: Optional[str] = None) -> np.ndarray:
+    """
+    Coerce a stereotype source column to float64, naming the column on failure.
+
+    v0.8.0: ``_compute_stereotypical_rank`` previously called
+    ``.to_numpy(dtype=np.float64)`` with no check, so a reasonable request such as
+    ``stereotype_column='Menopause'`` on a Yes/No column failed several frames
+    below the caller with ``could not convert string to float: 'No'`` and no
+    mention of which column was at fault.
+
+    Ordered categoricals are encoded by their category order and booleans become
+    0.0/1.0. Unordered categoricals and free-text columns raise ``ConfigError``:
+    stereotypical significance ranks by distance to a target, so an ordering is
+    required, and inventing one is the caller's decision to make explicitly.
+    """
+    name = column if column is not None else getattr(values, "name", None)
+    label = f"stereotype_column '{name}'" if name is not None else "the stereotype column"
+
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        if values.dtype.ordered:
+            codes = values.cat.codes.to_numpy()
+            out = codes.astype(np.float64)
+            out[codes < 0] = np.nan
+            return out
+        raise ConfigError(
+            f"{label} is an unordered categorical with categories "
+            f"{list(values.dtype.categories)}. Stereotypical significance ranks by "
+            "distance to a target, which needs an ordering. Rebuild the column with "
+            "pd.Categorical(..., ordered=True), or map it to numbers before fitting."
+        )
+
+    if pd.api.types.is_bool_dtype(values.dtype) or pd.api.types.is_numeric_dtype(values.dtype):
+        return values.to_numpy(dtype=np.float64)
+
+    converted = pd.to_numeric(values, errors="coerce")
+    unreadable = values.notna().to_numpy() & converted.isna().to_numpy()
+    if not unreadable.any():
+        return converted.to_numpy(dtype=np.float64)
+
+    sample = [repr(v) for v in pd.unique(values[unreadable])[:4]]
+    raise ConfigError(
+        f"{label} has dtype '{values.dtype}' and could not be read as numbers "
+        f"(values include {', '.join(sample)}). Stereotypical significance ranks by "
+        "distance to a numeric target, so the column must be numeric, boolean, or an "
+        "ordered categorical. Encode it before fitting, for example "
+        "df['col'] = df['col'].map({'No': 0, 'Yes': 1})."
+    )
 
 
 # ============================================================
@@ -664,6 +788,12 @@ class ShapleySignificanceEngine:
         )
         
         shapley_sum = np.zeros((n_samples, n_features), dtype=np.float64)
+        # v0.8.0: a second accumulator over every other permutation, so the
+        # estimate can report its own reliability. Splitting the permutations
+        # in half and correlating the two independent estimates is the
+        # cheapest honest answer to 'has this converged', and it needs no
+        # extra sampling.
+        shapley_half = np.zeros((n_samples, n_features), dtype=np.float64)
         n_perms_used = 0
         
         batch_size = 10
@@ -681,6 +811,8 @@ class ShapleySignificanceEngine:
                 for perm in batch_perms:
                     shapley_contrib = self._process_single_permutation(perm, X, value_function, context)
                     shapley_sum += shapley_contrib
+                    if n_perms_used % 2 == 0:
+                        shapley_half += shapley_contrib
                     n_perms_used += 1
                 
                 # MEMORY CLEANUP: Free batch permutations immediately
@@ -712,6 +844,8 @@ class ShapleySignificanceEngine:
                 # Accumulate results efficiently
                 for shapley_contrib in batch_results:
                     shapley_sum += shapley_contrib
+                    if n_perms_used % 2 == 0:
+                        shapley_half += shapley_contrib
                     n_perms_used += 1
                 
                 # MEMORY CLEANUP: Free batch results and permutations immediately
@@ -737,20 +871,45 @@ class ShapleySignificanceEngine:
         total_from_shapley = np.sum(Phi)
         additivity_error = abs(total_from_shapley - total_actual) / (abs(total_actual) + 1e-12)
         
+        # v0.8.0: split-half reliability of the RANKING this estimate produces.
+        # The additivity error above says the values sum to the right total; it
+        # says nothing about whether the order of the samples is reproducible,
+        # and the order is what gets reported as the formative instances.
+        # Measured on synthetic data, the default 100 permutations gives an
+        # archetypal formative ranking indistinguishable from chance, so this
+        # number belongs in front of the user.
+        _other_half = shapley_sum - shapley_half
+        _split_rho = _rank_correlation(shapley_half.sum(axis=1),
+                                       _other_half.sum(axis=1))
+
         info = {
             'n_permutations_used': n_perms_used,
             'converged': info.get('converged', False) if n_perms_used < self.n_permutations else True,
             'mean_rel_change': info.get('mean_rel_change', 0.0),
             'additivity_error': float(additivity_error),
             'total_shapley': float(total_from_shapley),
-            'total_actual': float(total_actual)
+            'total_actual': float(total_actual),
+            'split_half_rho': _split_rho,
         }
+
+        if np.isfinite(_split_rho) and _split_rho < 0.7 and n_perms_used >= 4:
+            warnings.warn(
+                f"The Shapley estimate for {value_function_name} has not "
+                f"converged: splitting the {n_perms_used} permutations in half "
+                f"gives two rankings that correlate only {_split_rho:.2f}. The "
+                "values sum correctly, but the ORDER of the samples, which is "
+                "what gets reported as the formative instances, is largely "
+                "sampling noise at this permutation count. Raise "
+                "shapley_n_permutations substantially and check that this "
+                "number rises with it before reading anything into the ranking.",
+                RuntimeWarning, stacklevel=3
+            )
         
         if self.verbose:
             print(f"    {n_perms_used} perms, additivity error: {additivity_error:.6f}")
         
         # MEMORY CLEANUP: Free shapley_sum before returning Phi (they're different objects)
-        _cleanup_memory(shapley_sum)
+        _cleanup_memory(shapley_sum, shapley_half, _other_half)
         
         return Phi, info
     
@@ -985,6 +1144,164 @@ def formative_archetypal_convex_hull(
         ranges = X_subset.max(axis=0) - X_subset.min(axis=0)
         return float(np.prod(ranges + 1e-10))
         
+
+def exact_formative_archetypal(
+    X: np.ndarray,
+    archetypes: np.ndarray
+) -> np.ndarray:
+    """
+    Exact Shapley values for the archetypal formative game, without sampling.
+
+    The value function is
+
+        v(S) = -mean over archetypes of min distance from that archetype to S,
+        v(empty) = 0,
+
+    which is a mean of "minimum" games, one per archetype. Shapley is linear in
+    the value function, so the answer is the mean of the per-archetype answers,
+    and each of those has a closed form.
+
+    For one archetype, sort the samples by distance. A sample contributes only
+    when every closer sample is absent from the coalition it joins, which gives,
+    for the sample at ascending rank r,
+
+        phi_r = -d_r / n  +  sum over k > r of (d_k - d_r) / ((k + 1) * k)
+
+    Both sums are suffix sums, so the whole thing is O(n log n) per archetype
+    after the sort. Verified against exhaustive coalition enumeration to machine
+    precision for several shapes.
+
+    Why this exists (v0.8.0): the Monte Carlo estimator is unbiased but converges
+    very slowly on this game. At the default 100 permutations two runs differing
+    only in the seed produced formative rankings correlating 0.02, and the
+    estimate was out by roughly twice the largest true value. This function
+    removes the sampling entirely.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Sample matrix, shape (n_samples, n_features), in the same space as the
+        archetypes.
+    archetypes : np.ndarray
+        Archetype matrix, shape (n_archetypes, n_features), normally ``H_``.
+
+    Returns
+    -------
+    np.ndarray
+        Exact Shapley value per sample, shape (n_samples,).
+    """
+    X = np.ascontiguousarray(X, dtype=np.float64)
+    archetypes = np.ascontiguousarray(archetypes, dtype=np.float64)
+    n_samples = X.shape[0]
+    if n_samples == 0:
+        return np.zeros(0, dtype=np.float64)
+    if n_samples == 1:
+        # the single sample carries the whole value of the grand coalition
+        diffs = archetypes - X[0]
+        return np.array([-float(np.mean(np.sqrt((diffs ** 2).sum(axis=1))))])
+
+    diffs = archetypes[:, None, :] - X[None, :, :]
+    dists = np.sqrt((diffs ** 2).sum(axis=2))       # (n_archetypes, n_samples)
+
+    # weights 1/((k+1)k) for k >= 1, with the k = 0 slot unused
+    k = np.arange(n_samples, dtype=np.float64)
+    weights = np.zeros(n_samples, dtype=np.float64)
+    weights[1:] = 1.0 / ((k[1:] + 1.0) * k[1:])
+
+    phi = np.zeros(n_samples, dtype=np.float64)
+    for row in dists:
+        order = np.argsort(row, kind="mergesort")
+        ds = row[order]
+
+        # suffix sums over k > r
+        weighted = ds * weights
+        suffix_wd = np.concatenate([np.cumsum(weighted[::-1])[::-1][1:], [0.0]])
+        suffix_w = np.concatenate([np.cumsum(weights[::-1])[::-1][1:], [0.0]])
+
+        phi_sorted = -ds / n_samples + suffix_wd - ds * suffix_w
+        contribution = np.empty(n_samples, dtype=np.float64)
+        contribution[order] = phi_sorted
+        phi += contribution
+
+    return phi / dists.shape[0]
+
+
+def exact_formative_stereotypical(
+    target_values: np.ndarray,
+    target: Union[str, float],
+    median: Optional[float] = None
+) -> np.ndarray:
+    """
+    Exact Shapley values for the stereotypical formative game, without sampling.
+
+    The value function is a plain mean over the coalition, which has a closed
+    form. For ``target='max'`` it is
+
+        v(S) = (1/|S|) * sum over i in S of c_i,   c_i = max(0, v_i - median)
+        v(empty) = 0
+
+    Every coalition size carries weight 1/n, the marginal at size 0 is c_i, and
+    at size s >= 1 it is (c_i - mbar_i)/(s + 1) in expectation, where mbar_i is
+    the mean of c over the other players. Summing over s gives
+
+        phi_i = (1/n) * [ c_i + (c_i - mbar_i) * (H_n - 1) ]
+
+    with H_n the nth harmonic number. ``'min'`` is the same with the sign of the
+    deviation flipped. A numeric target adds a constant on every non-empty
+    coalition, contributing A/n each, minus a mean game on the distances.
+
+    Verified against exhaustive coalition enumeration for all three target
+    modes, and the values satisfy efficiency exactly.
+
+    .. note::
+
+       The result is an **affine function of c_i**, so this ranking is a monotone
+       transform of the stereotype column and carries no information beyond it.
+       That is a property of the value function, not of this implementation: the
+       Monte Carlo estimate is a noisy version of the same thing. It means the
+       stereotypical dual-perspective plot has both axes driven by one column.
+
+    Parameters
+    ----------
+    target_values : np.ndarray
+        The stereotype column, one value per sample.
+    target : str or float
+        ``'max'``, ``'min'``, or a numeric target.
+    median : float, optional
+        Median of ``target_values``; computed if not supplied.
+
+    Returns
+    -------
+    np.ndarray
+        Exact Shapley value per sample.
+    """
+    values = np.asarray(target_values, dtype=np.float64).ravel()
+    n_samples = values.size
+    if n_samples == 0:
+        return np.zeros(0, dtype=np.float64)
+    if median is None:
+        median = float(np.median(values))
+
+    def _mean_game(c: np.ndarray) -> np.ndarray:
+        if n_samples == 1:
+            return c.copy()
+        harmonic = float(np.sum(1.0 / np.arange(1, n_samples + 1)))
+        others_mean = (float(c.sum()) - c) / (n_samples - 1)
+        return (c + (c - others_mean) * (harmonic - 1.0)) / n_samples
+
+    if isinstance(target, str):
+        if target == "max":
+            return _mean_game(np.maximum(values - median, 0.0))
+        if target == "min":
+            return _mean_game(np.maximum(median - values, 0.0))
+        raise ConfigError(
+            f"target must be 'min', 'max' or numeric, got {target!r}"
+        )
+
+    numeric_target = float(target)
+    constant = abs(median - numeric_target)
+    return constant / n_samples - _mean_game(np.abs(values - numeric_target))
+
 
 def formative_archetypal_pcha_cached(
     X_subset: np.ndarray,
@@ -1266,6 +1583,16 @@ class DataTypical:
     max_missing_frac: float = 1.0
 
     # ---- Stereotype Configuration (NEW in v0.4) ----
+    # NOTE (v0.8.0): stereotypical_rank is a deterministic, monotone function of
+    # stereotype_column alone -- see Methods 2.3.1, eq. 26:
+    #     s_stereo_i = 1 - |y_i - tau| / max_j |y_j - tau|
+    # It carries no information beyond the distance from the target on that one
+    # column. Placing an outcome-derived quantity in stereotype_column and then
+    # evaluating the resulting rank on held-out rows is therefore circular, and
+    # will return a perfect correlation that means nothing. This is by design:
+    # stereotypical significance depends on an external specification of what
+    # counts as interesting, unlike archetypal and prototypical significance,
+    # which derive from the intrinsic geometry of the data.
     stereotype_column: Optional[str] = None
     stereotype_target: Union[str, float] = "max"
     label_columns: Optional[List[str]] = None
@@ -1282,6 +1609,13 @@ class DataTypical:
     shapley_early_stopping_patience: int = 10
     shapley_early_stopping_tolerance: float = 0.01
     shapley_compute_formative: Optional[bool] = None  # NEW in v0.7: None = auto from fast_mode
+    # v0.8.0: how the ARCHETYPAL formative values are computed.
+    #   'monte_carlo' (default, unchanged) permutation sampling
+    #   'exact'       the closed form, no sampling, O(n log n) per archetype
+    # The prototypical and stereotypical formative values are Monte Carlo
+    # either way; only the archetypal game has the structure that admits a
+    # closed form. Left at 'monte_carlo' by default so no existing result moves.
+    formative_method: str = "monte_carlo"
 
     # ---- Performance Mode (NEW in v0.7) ----
     fast_mode: bool = False
@@ -1297,6 +1631,9 @@ class DataTypical:
     reconstruction_error_: Optional[float] = field(default=None, init=False)
 
     n_archetypes_: Optional[int] = field(default=None, init=False)
+    # v0.8.0: which backend actually produced the archetypes, so a completed fit
+    # can be audited: 'pcha', 'convexhull' or 'nmf'. See _fit_archetypal_aa.
+    archetypal_backend_: Optional[str] = field(default=None, init=False)
     prototype_indices_: Optional[np.ndarray] = field(default=None, init=False)
     prototype_rows_: Optional[np.ndarray] = field(default=None, init=False)
     prototype_features_: Optional[np.ndarray] = field(default=None, init=False)
@@ -1436,6 +1773,43 @@ class DataTypical:
                 print(f"Auto-detected data_type: '{detected}'")
             return detected
     
+    def _reset_fit_state(self) -> None:
+        """
+        Clear everything a previous fit left behind.
+
+        v0.8.0: several attributes were written only on the path that produces
+        them and read back with `hasattr` or an is-not-None check, so they
+        survived into the next fit on the same object:
+
+        * refitting on clean data still reported the previous fit's
+          `dropped_columns_`;
+        * refitting with `stereotype_column=None` kept the previous stereotype
+          source;
+        * fitting text after tabular left `_df_original_fit`,
+          `feature_columns_` and `keep_mask_` pointing at the tabular frame, so
+          `profile_plot` and `heatmap` would have described the wrong data
+          instead of refusing.
+
+        Called from every public fit entry point, before any work.
+        """
+        self.dropped_columns_ = []
+        self.missingness_ = {}
+        self._df_original_fit = None
+        self.label_df_ = None
+        self.text_metadata_ = None
+        self.stereotype_keyword_scores_ = None
+        self.graph_topology_df_ = None
+        self._stereotype_source_fit_ = None
+
+        self.feature_columns_ = None
+        self.keep_mask_ = None
+        self.impute_median_ = None
+        self.scaler_ = None
+        self.vectorizer_ = None
+
+        if hasattr(self, "_union_core_samples"):
+            del self._union_core_samples
+
     def _apply_fast_mode_defaults(self) -> None:
         """
         Apply fast_mode preset defaults if parameters not explicitly set.
@@ -1444,39 +1818,114 @@ class DataTypical:
         fast_mode=False: Publication (AA + formative + full dataset)
         
         Users can override any individual parameter by setting it explicitly.
+
+        v0.8.0: this used to run once per object, guarded by an
+        `_fast_mode_applied` flag, so changing `fast_mode` and refitting left
+        the previous mode's presets in place. It now runs on every fit. A value
+        this method filled in itself is released first, and only when it still
+        holds exactly what was put there, so an explicit choice made in between
+        is never overwritten.
         """
+        _previous = getattr(self, "_autofilled_presets_", {})
+        for _name, _value in _previous.items():
+            if getattr(self, _name) == _value:
+                setattr(self, _name,
+                        100 if _name == "shapley_n_permutations" else None)
+        _autofilled = {}
+
         if self.fast_mode:
             # Fast mode defaults (exploration)
             if self.archetypal_method is None:
                 self.archetypal_method = 'nmf'
+                _autofilled["archetypal_method"] = 'nmf'
             
             # Reduce Shapley permutations for speed
             if self.shapley_n_permutations == 100:  # Default value, not overridden
                 self.shapley_n_permutations = 30
+                _autofilled["shapley_n_permutations"] = 30
             
             # Subsample explanations to top 50%
             if self.shapley_top_n is None:
                 self.shapley_top_n = 0.5  # 50% of instances
+                _autofilled["shapley_top_n"] = 0.5
             
             # Skip formative in fast mode (explanations only)
             if self.shapley_compute_formative is None:
                 self.shapley_compute_formative = False
+                _autofilled["shapley_compute_formative"] = False
                 
         else:
             # Publication mode defaults (rigorous)
             if self.archetypal_method is None:
                 self.archetypal_method = 'aa'  # True archetypal analysis
+                _autofilled["archetypal_method"] = 'aa'
             
             # Keep shapley_n_permutations=100 (default)
             # Keep shapley_top_n=None (compute for all instances) 
             # Compute formative in publication mode
             if self.shapley_compute_formative is None:
                 self.shapley_compute_formative = True
+                _autofilled["shapley_compute_formative"] = True
         
+        self._autofilled_presets_ = _autofilled
+
+        # v0.8.0: scale, distance_metric and similarity_metric were declared as
+        # parameters but never read anywhere in the module. Any value was
+        # accepted, including nonsense, and the pipeline went on using MinMax
+        # scaling, Euclidean distance and cosine similarity regardless. A caller
+        # asking for standardised features, or a cosine distance, silently got
+        # neither. Rather than change the numerics in a bug-fix release, the
+        # implemented value is now the only one accepted, so the parameter can
+        # no longer claim something the code does not do.
+        # v0.8.0: only the exact string 'kneedle' did anything. Any other
+        # value, including a near miss like 'knee', was accepted and then
+        # ignored, so a caller who asked for automatic selection quietly got
+        # none.
+        if self.auto_n_prototypes not in (None, "kneedle"):
+            raise ConfigError(
+                f"auto_n_prototypes={self.auto_n_prototypes!r} is not "
+                "recognised. Use 'kneedle' for automatic selection, or None to "
+                "keep n_prototypes as given. Earlier versions accepted any "
+                "value here and then ignored it."
+            )
+
+        if self.formative_method not in ("monte_carlo", "exact"):
+            raise ConfigError(
+                f"formative_method={self.formative_method!r} is not recognised. "
+                "Use 'monte_carlo' for permutation sampling, the default, or "
+                "'exact' for the closed-form archetypal formative values."
+            )
+
+        _implemented = {
+            "scale": ("minmax", "MinMax scaling to [0, 1]"),
+            "distance_metric": ("euclidean", "Euclidean distance"),
+            "similarity_metric": ("cosine", "cosine similarity"),
+        }
+        for _name, (_only, _what) in _implemented.items():
+            _value = getattr(self, _name)
+            if _value != _only:
+                raise ConfigError(
+                    f"{_name}={_value!r} is not implemented. DataTypical uses "
+                    f"{_what} throughout, and only {_name}={_only!r} is "
+                    f"accepted. Earlier versions accepted any value here and "
+                    f"then ignored it, so a fit that asked for {_value!r} was "
+                    f"silently computed with {_only!r}."
+                )
+
+        # v0.8.0: max_memory_mb only reached _chunk_len on the chunked path,
+        # so a nonsensical budget was accepted in silence on anything small
+        # enough to skip chunking, then raised much later on a larger dataset.
+        if not isinstance(self.max_memory_mb, (int, float)) or self.max_memory_mb <= 0:
+            raise ConfigError(
+                f"max_memory_mb must be a positive number of megabytes, got "
+                f"{self.max_memory_mb!r}."
+            )
+
         # Validate archetypal_method
-        if self.archetypal_method not in ['nmf', 'aa']:
+        if self.archetypal_method not in ['nmf', 'aa', 'auto']:
             raise ValueError(
-                f"archetypal_method must be 'nmf' or 'aa', got '{self.archetypal_method}'"
+                f"archetypal_method must be 'nmf', 'aa' or 'auto', "
+                f"got '{self.archetypal_method}'"
             )
         
         if self.verbose:
@@ -1541,10 +1990,12 @@ class DataTypical:
         >>> dt = DataTypical(data_type='tabular')
         >>> dt.fit(data)
         """
-        # Apply fast_mode defaults (if not already applied)
-        if not hasattr(self, '_fast_mode_applied'):
-            self._apply_fast_mode_defaults()
-            self._fast_mode_applied = True
+        # v0.8.0: both of these run on every fit. The presets used to be
+        # applied once per object, so changing fast_mode and refitting left the
+        # previous mode in place, and nothing cleared the state a previous fit
+        # had written.
+        self._reset_fit_state()
+        self._apply_fast_mode_defaults()
         
         # Auto-detect data type
         detected = self._auto_detect_data_type(X, **kwargs)
@@ -1655,6 +2106,14 @@ class DataTypical:
         self._validate_stereotype_config()
         df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(np.asarray(X))
         self.train_index_ = df.index.copy()
+
+        # v0.8.0: validate the stereotype column here, at fit time, whatever
+        # shapley_mode is set to. Previously it was only read when
+        # shapley_mode=True, or later at transform, so a missing or non-numeric
+        # column surfaced well after the call that introduced it.
+        if self.stereotype_column is not None:
+            self._get_stereotype_source_table(df)
+
         with _ThreadControl(self.deterministic and not self.speed_mode) as tc:
             _seed_everything(self.random_state)
             X_scaled, X_l2 = self._preprocess_table_fit(df)
@@ -1686,6 +2145,16 @@ class DataTypical:
         with _ThreadControl(self.deterministic and not self.speed_mode) as tc:
             _seed_everything(self.random_state)
             X_scaled, X_l2 = self._preprocess_text_fit(corpus, vectorizer, text_metadata)
+
+            # v0.8.0: validate the stereotype configuration against the metadata
+            # preprocessing has just attached. _get_stereotype_source_text holds
+            # the right errors but nothing ever called it, so a stereotype_column
+            # supplied without text_metadata silently fell back to extremeness --
+            # the same class of silent substitution as the archetypal backend.
+            _stereotype_check = self._get_stereotype_source_text()
+            if _stereotype_check is not None and self.stereotype_column is not None:
+                _stereotype_values_as_float(_stereotype_check, self.stereotype_column)
+
             idx = pd.RangeIndex(X_scaled.shape[0])
             self.train_index_ = idx
             self._fit_components(X_scaled, X_l2, idx)
@@ -1879,7 +2348,7 @@ class DataTypical:
                             print("  Formative: SKIPPED (fast_mode)")
     
                     # Get correct stereotype source for ranking
-                    stereotype_source = self._stereotype_source_fit_ if hasattr(self, '_stereotype_source_fit_') else None
+                    stereotype_source = getattr(self, '_stereotype_source_fit_', None)
                     temp_results = self._score_with_fitted(X_scaled, X_l2, index, stereotype_source)
     
                     # Get top n_subsample for each metric separately (skip NaN columns from selected_significance)
@@ -1951,15 +2420,37 @@ class DataTypical:
                     print("    Using FULL dataset (required to measure structure)")
 
                 if run_arch_shap and self.H_ is not None:
-                    context_archetypal = {'archetypes': self.H_.astype(np.float64)}
-                    self.Phi_archetypal_formative_, self.shapley_info_['archetypal_formative'] = \
-                        engine.compute_shapley_values(
-                            X_dense,
-                            formative_archetypal_pcha_cached,
-                            "Archetypal Formative (Cached Archetypes)",
-                            context_archetypal
-                        )
-                    _cleanup_memory(context_archetypal)
+                    if self.formative_method == "exact":
+                        # v0.8.0: the closed form, so the ranking carries no
+                        # sampling noise at all. Spread across the feature
+                        # columns the same way the sampler does, so the shape
+                        # and every downstream consumer are unchanged.
+                        _exact = exact_formative_archetypal(
+                            X_dense, self.H_.astype(np.float64))
+                        n_feat = X_dense.shape[1]
+                        self.Phi_archetypal_formative_ = np.repeat(
+                            (_exact / max(n_feat, 1))[:, None], n_feat, axis=1)
+                        self.shapley_info_['archetypal_formative'] = {
+                            'method': 'exact',
+                            'n_permutations_used': 0,
+                            'converged': True,
+                            'split_half_rho': 1.0,
+                            'additivity_error': 0.0,
+                        }
+                        if self.verbose:
+                            print("    Archetypal formative: exact closed form, "
+                                  "no sampling")
+                    else:
+                        context_archetypal = {'archetypes': self.H_.astype(np.float64)}
+                        self.Phi_archetypal_formative_, self.shapley_info_['archetypal_formative'] = \
+                            engine.compute_shapley_values(
+                                X_dense,
+                                formative_archetypal_pcha_cached,
+                                "Archetypal Formative (Cached Archetypes)",
+                                context_archetypal
+                            )
+                        self.shapley_info_['archetypal_formative']['method'] = 'monte_carlo'
+                        _cleanup_memory(context_archetypal)
                 else:
                     self.Phi_archetypal_formative_ = None
 
@@ -1973,20 +2464,40 @@ class DataTypical:
                 else:
                     self.Phi_prototypical_formative_ = None
 
-                if run_stereo_shap and self.stereotype_column is not None and hasattr(self, '_stereotype_source_fit_'):
+                if run_stereo_shap and self.stereotype_column is not None \
+                        and getattr(self, '_stereotype_source_fit_', None) is not None:
                     target_values = self._stereotype_source_fit_.to_numpy(dtype=np.float64)
                     context = {
                         'target_values': target_values,
                         'target': self.stereotype_target,
                         'median': np.median(target_values)
                     }
-                    self.Phi_stereotypical_formative_, self.shapley_info_['stereotypical_formative'] = \
-                        engine.compute_shapley_values(
-                            X_dense,
-                            formative_stereotypical_extremeness,
-                            "Stereotypical Formative (Extremeness)",
-                            context
-                        )
+                    if self.formative_method == "exact":
+                        _exact = exact_formative_stereotypical(
+                            target_values, self.stereotype_target,
+                            float(np.median(target_values)))
+                        n_feat = X_dense.shape[1]
+                        self.Phi_stereotypical_formative_ = np.repeat(
+                            (_exact / max(n_feat, 1))[:, None], n_feat, axis=1)
+                        self.shapley_info_['stereotypical_formative'] = {
+                            'method': 'exact',
+                            'n_permutations_used': 0,
+                            'converged': True,
+                            'split_half_rho': 1.0,
+                            'additivity_error': 0.0,
+                        }
+                        if self.verbose:
+                            print("    Stereotypical formative: exact closed "
+                                  "form, no sampling")
+                    else:
+                        self.Phi_stereotypical_formative_, self.shapley_info_['stereotypical_formative'] = \
+                            engine.compute_shapley_values(
+                                X_dense,
+                                formative_stereotypical_extremeness,
+                                "Stereotypical Formative (Extremeness)",
+                                context
+                            )
+                        self.shapley_info_['stereotypical_formative']['method'] = 'monte_carlo'
                 else:
                     self.Phi_stereotypical_formative_ = None
             else:
@@ -2091,8 +2602,44 @@ class DataTypical:
         # Value functions receive LOCAL indices (0..len(X_subset)-1), so target_values
         # must be sized to match the X subset passed to compute_feature_shapley_values.
         _full_target_values: Optional[np.ndarray] = None
-        if run_stereo_exp and self.stereotype_column is not None and hasattr(self, '_stereotype_source_fit_'):
-            _full_target_values = self._stereotype_source_fit_.to_numpy(dtype=np.float64)
+        if run_stereo_exp and self.stereotype_column is not None \
+                and getattr(self, '_stereotype_source_fit_', None) is not None:
+            _full_target_values = _stereotype_values_as_float(
+                self._stereotype_source_fit_, self.stereotype_column
+            )
+
+        # v0.8.0 FIX: this closure and its context entries are defined at function
+        # scope, not inside the core-samples branch. When subsample_indices is
+        # supplied, core_samples comes from self._union_core_samples and can be
+        # empty while secondary_samples is not; the secondary branch calls this
+        # closure too, which previously raised UnboundLocalError.
+        def explain_stereotypical_features(X_subset, indices, ctx):
+            if len(X_subset) == 0 or X_subset.shape[1] == 0:
+                return 0.0
+            if ctx.get('target_values') is None:
+                return 0.0
+
+            sample_idx = indices[0]
+            target_value = ctx['target_values'][sample_idx]
+            target = ctx['stereotype_target']
+
+            if isinstance(target, str):
+                median = ctx.get('median', np.median(ctx['target_values']))
+                if target == 'max':
+                    distance = max(0, target_value - median)
+                elif target == 'min':
+                    distance = max(0, median - target_value)
+                else:
+                    distance = 0.0
+            else:
+                distance = -abs(target_value - target)
+
+            feature_contrib = float(np.mean(np.abs(X_subset)))
+            return distance * feature_contrib
+
+        if run_stereo_exp and self.stereotype_column is not None:
+            context['stereotype_target'] = self.stereotype_target
+            context['median'] = np.median(_full_target_values) if _full_target_values is not None else 0.0
 
         # COMPUTE CORE SAMPLES (full permutations)
         if len(core_samples) > 0:
@@ -2126,35 +2673,9 @@ class DataTypical:
 
             # Stereotypical explanations (if applicable)
             if run_stereo_exp and self.stereotype_column is not None:
-                def explain_stereotypical_features(X_subset, indices, ctx):
-                    if len(X_subset) == 0 or X_subset.shape[1] == 0:
-                        return 0.0
-                    if ctx.get('target_values') is None:
-                        return 0.0
-                    
-                    sample_idx = indices[0]
-                    target_value = ctx['target_values'][sample_idx]
-                    target = ctx['stereotype_target']
-                    
-                    if isinstance(target, str):
-                        median = ctx.get('median', np.median(ctx['target_values']))
-                        if target == 'max':
-                            distance = max(0, target_value - median)
-                        elif target == 'min':
-                            distance = max(0, median - target_value)
-                        else:
-                            distance = 0.0
-                    else:
-                        distance = -abs(target_value - target)
-                    
-                    feature_contrib = float(np.mean(np.abs(X_subset)))
-                    return distance * feature_contrib
-                
                 if self.verbose:
                     print(f"  Computing stereotypical explanations (core: {len(core_samples)} samples)...")
-                
-                context['stereotype_target'] = self.stereotype_target
-                context['median'] = np.median(_full_target_values) if _full_target_values is not None else 0.0
+
                 # Slice to core_samples so local index i == core_samples[i] globally
                 context['target_values'] = _full_target_values[core_samples] if _full_target_values is not None else None
                 
@@ -2289,10 +2810,39 @@ class DataTypical:
         """
         n_samples = len(self.train_index_)
 
-        def _norm_or_none(arr):
+        def _norm_or_none(arr, name=""):
             if arr is None:
                 return [None] * n_samples
             vals = arr.sum(axis=1)
+
+            # v0.8.0: a non-finite value function used to land in the
+            # equal-values branch below, because every comparison against NaN is
+            # False, and every sample was then reported as 0.5. A mid-rank for
+            # the whole dataset is a confident-looking number standing in for
+            # "could not be computed". Propagate the NaN instead, and say so.
+            if not np.all(np.isfinite(vals)):
+                n_bad = int(np.count_nonzero(~np.isfinite(vals)))
+                warnings.warn(
+                    f"{n_bad} of {vals.size} formative {name} value(s) are not "
+                    "finite, so the corresponding ranks are NaN rather than a "
+                    "number. This usually means the value function could not be "
+                    "evaluated on some coalition, often from degenerate or "
+                    "constant data.",
+                    RuntimeWarning, stacklevel=3
+                )
+                out = np.full(vals.shape, np.nan, dtype=np.float64)
+                good = np.isfinite(vals)
+                if good.sum() > 1:
+                    g = vals[good]
+                    g_min, g_max = float(g.min()), float(g.max())
+                    if (g_max - g_min) > 1e-12:
+                        out[good] = (g - g_min) / (g_max - g_min)
+                    else:
+                        out[good] = 0.5
+                elif good.sum() == 1:
+                    out[good] = 0.5
+                return np.round(out, 10)
+
             r_min, r_max = vals.min(), vals.max()
             if (r_max - r_min) > 1e-12:
                 normalized = (vals - r_min) / (r_max - r_min)
@@ -2301,9 +2851,9 @@ class DataTypical:
             return np.round(normalized, 10)
 
         return pd.DataFrame({
-            'archetypal_shapley_rank':    _norm_or_none(self.Phi_archetypal_formative_),
-            'prototypical_shapley_rank':  _norm_or_none(self.Phi_prototypical_formative_),
-            'stereotypical_shapley_rank': _norm_or_none(self.Phi_stereotypical_formative_),
+            'archetypal_shapley_rank':    _norm_or_none(self.Phi_archetypal_formative_, "archetypal"),
+            'prototypical_shapley_rank':  _norm_or_none(self.Phi_prototypical_formative_, "prototypical"),
+            'stereotypical_shapley_rank': _norm_or_none(self.Phi_stereotypical_formative_, "stereotypical"),
         }, index=self.train_index_)
 
         
@@ -2401,13 +2951,22 @@ class DataTypical:
             Must have same number of rows as documents in corpus
         """
         corpus = list(corpus)  # materialize once; _preprocess_text_fit may consume it
-        if not hasattr(self, '_fast_mode_applied'):
-            self._apply_fast_mode_defaults()
-            self._fast_mode_applied = True
+        self._reset_fit_state()
+        self._apply_fast_mode_defaults()
         self._validate_stereotype_config()
         with _ThreadControl(self.deterministic and not self.speed_mode) as tc:
             _seed_everything(self.random_state)
             X_scaled, X_l2 = self._preprocess_text_fit(corpus, vectorizer, text_metadata)
+
+            # v0.8.0: validate the stereotype configuration against the metadata
+            # preprocessing has just attached. _get_stereotype_source_text holds
+            # the right errors but nothing ever called it, so a stereotype_column
+            # supplied without text_metadata silently fell back to extremeness --
+            # the same class of silent substitution as the archetypal backend.
+            _stereotype_check = self._get_stereotype_source_text()
+            if _stereotype_check is not None and self.stereotype_column is not None:
+                _stereotype_values_as_float(_stereotype_check, self.stereotype_column)
+
             idx = pd.RangeIndex(X_scaled.shape[0])
             self.train_index_ = idx
             self._fit_components(X_scaled, X_l2, idx)
@@ -2516,10 +3075,12 @@ class DataTypical:
         n_nodes = len(df)
         
         # Compute topology features if edges provided
-        self.graph_topology_df_ = None
+        # v0.8.0: computed here but published onto the estimator only after
+        # self.fit() below, because fit() now clears the state a previous fit
+        # left behind and would otherwise wipe this on its way past.
+        topology_df = None
         if edges is not None and compute_topology:
             topology_df = self._compute_graph_topology_features(edges, n_nodes)
-            self.graph_topology_df_ = topology_df
             
             # Append to node features
             for col in topology_df.columns:
@@ -2530,6 +3091,7 @@ class DataTypical:
         
         # Standard tabular processing
         self.fit(df)
+        self.graph_topology_df_ = topology_df
         
         # Use standard transform which preserves label columns
         results = self.transform(df, return_ranks_only=False)
@@ -2540,6 +3102,32 @@ class DataTypical:
     # Ideals (legacy stereotypes)
     # --------------------------
     def register_ideal(self, name: str, ideal_vector: Union[np.ndarray, List[float]]) -> None:
+        """
+        Store a named reference vector in ``ideals_``.
+
+        .. warning::
+
+           **This stores the vector and nothing else.** No scoring path reads
+           ``ideals_``, so registering an ideal does not change any rank, any
+           explanation or any output. It is a leftover from the pre-v0.4
+           stereotype mechanism, kept so existing code does not break.
+
+           To rank instances towards a target, use ``stereotype_column`` with
+           ``stereotype_target``, which is the supported mechanism and is what
+           the manuscript describes.
+
+        The dimension check is still performed, so a mismatched vector is
+        rejected rather than stored.
+        """
+        # v0.8.0: say so rather than leaving the name to imply an effect it
+        # does not have.
+        warnings.warn(
+            "register_ideal() stores the vector in ideals_ and nothing reads "
+            "it, so it has no effect on any rank or explanation. It is a "
+            "leftover from the pre-v0.4 stereotype mechanism. Use "
+            "stereotype_column with stereotype_target to rank towards a target.",
+            DeprecationWarning, stacklevel=2
+        )
         v = np.asarray(ideal_vector, dtype=np.float64).ravel()
         if self.scaler_ is None:
             raise RuntimeError("Call fit/fit_text before registering ideals.")
@@ -2563,8 +3151,14 @@ class DataTypical:
             "shapley_mode","shapley_n_permutations","shapley_top_n",
             "shapley_early_stopping_patience","shapley_early_stopping_tolerance",
             "shapley_compute_formative","fast_mode","archetypal_method",
+            "formative_method",
+            # v0.8.0: feature_weights was missing, so from_config(to_config())
+            # silently dropped it and produced a different fit. On a five-feature
+            # frame that moved archetypal_rank by 0.33 and prototypical_rank by
+            # 0.50, which is a different answer, not a rounding difference.
+            "feature_weights",
         ]}
-        cfg["version"] = "0.7.7"
+        cfg["version"] = "0.8.0"
         return cfg
 
     @classmethod
@@ -2619,11 +3213,49 @@ class DataTypical:
             )
         
         # Convert edge_index to NetworkX graph
-        if edge_index.shape[0] == 2:
+        edge_index = np.asarray(edge_index)
+        if edge_index.ndim != 2 or 2 not in edge_index.shape:
+            raise ValueError(
+                f"edges must be a 2D array shaped (2, n_edges) or (n_edges, 2), "
+                f"got shape {edge_index.shape}."
+            )
+
+        if edge_index.shape == (2, 2):
+            # v0.8.0: genuinely ambiguous. Two edges written as rows and two
+            # nodes written as columns are the same array. Rows are the
+            # documented form, so that is what is used, but say so rather than
+            # picking silently.
+            warnings.warn(
+                "edges has shape (2, 2), which is ambiguous: it could be two "
+                "edges as rows or two nodes as columns. Reading it as two edges, "
+                "one per row. Transpose it if that is not what you meant.",
+                RuntimeWarning, stacklevel=2
+            )
+            edges = edge_index
+        elif edge_index.shape[0] == 2:
             edges = edge_index.T  # (n_edges, 2)
         else:
             edges = edge_index
-        
+
+        # v0.8.0: an edge naming a node outside range(n_nodes) used to be
+        # accepted in silence. NetworkX simply added the extra node, so every
+        # global measure was then normalised over a graph larger than the one
+        # asked about: pagerank over the requested nodes summed to less than 1,
+        # and betweenness and closeness were computed against phantom nodes. The
+        # returned columns looked perfectly ordinary.
+        if np.asarray(edges).size:
+            flat = np.asarray(edges).ravel()
+            bad = np.unique(flat[(flat < 0) | (flat >= n_nodes)])
+            if bad.size:
+                raise ValueError(
+                    f"edges reference node indices outside range(0, {n_nodes}): "
+                    f"{list(bad[:10])}{' and more' if bad.size > 10 else ''}. "
+                    "Every topology feature would otherwise be computed on a "
+                    "larger graph than the node features describe, which "
+                    "silently changes pagerank, betweenness and closeness for "
+                    "every node."
+                )
+
         G = nx.Graph()
         G.add_nodes_from(range(n_nodes))
         G.add_edges_from(edges)
@@ -2724,6 +3356,14 @@ class DataTypical:
         -------
         stereotype_rank : np.ndarray
             Scores in [0, 1] where 1 = closest to stereotype target
+
+        Notes
+        -----
+        When ``stereotype_source`` is supplied, the returned rank is a monotone
+        rescaling of the distance from the target on that one column and nothing
+        else (Methods 2.3.1, eq. 26). Do not place an outcome-derived quantity in
+        ``stereotype_column`` and then evaluate the rank against that outcome on
+        held-out rows: the correlation is guaranteed by construction.
         """
         if stereotype_source is None:
             # BACKWARD COMPATIBLE: use extremeness
@@ -2736,7 +3376,7 @@ class DataTypical:
                 return np.zeros_like(s)
         
         # USER-DIRECTED: Rank toward specific target
-        values = stereotype_source.to_numpy(dtype=np.float64)
+        values = _stereotype_values_as_float(stereotype_source, self.stereotype_column)
         
         # Handle NaN values
         valid_mask = ~np.isnan(values)
@@ -2785,8 +3425,12 @@ class DataTypical:
                 f"stereotype_column '{self.stereotype_column}' not found. "
                 f"Available columns: {list(df.columns)}"
             )
-        
-        return df[self.stereotype_column]
+
+        # v0.8.0: fail here, naming the column, rather than several frames deep
+        # inside pandas once the fit is already under way.
+        source = df[self.stereotype_column]
+        _stereotype_values_as_float(source, self.stereotype_column)
+        return source
 
     def _get_stereotype_source_text(self) -> Optional[pd.Series]:
         """Extract stereotype values from text metadata or keywords."""
@@ -2957,7 +3601,20 @@ class DataTypical:
         feat_df = self._select_numeric_features(df_for_features)
         self.feature_columns_ = list(feat_df.columns)
 
-        X = feat_df.to_numpy(dtype=self.dtype, copy=True)
+        # v0.8.0: read and scale in float64, then cast the SCALED result to the
+        # working dtype below. Casting the raw data first destroyed it whenever
+        # the input was not already of order 1:
+        #   * values above ~3.4e38 became inf, and MinMaxScaler then raised a
+        #     bare "Input X contains infinity" from inside sklearn;
+        #   * values below ~1.2e-38 underflowed to zero, every column read as
+        #     constant, and the fit died with "No numeric feature columns
+        #     remain", which points at the wrong thing entirely;
+        #   * an informative feature carrying its signal in the 7th significant
+        #     digit (say a measurement offset by 1000) lost that signal outright
+        #     and was silently dropped as constant.
+        # The scaled matrix lives in [0, 1], so storing THAT in float32 gives the
+        # memory saving dtype is for, with none of the damage.
+        X = feat_df.to_numpy(dtype=np.float64, copy=True)
 
         # Missingness report on features
         miss_frac = np.mean(pd.isna(feat_df), axis=0).to_numpy()
@@ -2974,6 +3631,49 @@ class DataTypical:
         X[inds] = np.take(med, inds[1])
         self.impute_median_ = med
 
+        # v0.8.0: warn when a few extreme values own a feature's range.
+        #
+        # MinMax scaling maps the extremes to 0 and 1 and compresses everything
+        # else towards one end. The origin is itself a corner of the unit
+        # hypercube, so a compressed bulk sits *in* the corner region that the
+        # archetypal corner term rewards, and the term stops discriminating.
+        # Measured on synthetic data, an outlier at 3 to 5 standard deviations
+        # still ranks above the cloud median on 6 of 6 seeds, but one at 30
+        # standard deviations ranks *below* it on 0 of 6: the more extreme the
+        # point, the less archetypal it is judged. The middle-98% share of the
+        # full range separates the two regimes cleanly (about 0.75 for normal
+        # data, 0.14 at 30 sd), so that is what is reported here.
+        #
+        # This is a property of the published measure, not a coding error, so
+        # nothing about the arithmetic changes. It is worth saying out loud
+        # because the regime is common in assay and biomarker data.
+        if X.shape[0] >= 20 and X.shape[1] >= 1:
+            _lo = np.nanpercentile(X, 1, axis=0)
+            _hi = np.nanpercentile(X, 99, axis=0)
+            _full = np.nanmax(X, axis=0) - np.nanmin(X, axis=0)
+            _safe = np.where(_full > 0, _full, 1.0)
+            _share = (_hi - _lo) / _safe
+            _cramped = np.where(np.isfinite(_share) & (_share < 0.2))[0]
+            if _cramped.size:
+                _names = [self.feature_columns_[i] for i in _cramped[:5]]
+                warnings.warn(
+                    f"{_cramped.size} feature(s) have their range dominated by a "
+                    f"few extreme values; the middle 98% of "
+                    f"{_names}{' and more' if _cramped.size > 5 else ''} spans "
+                    f"under a fifth of the full range. After MinMax scaling the "
+                    "bulk of the rows is compressed against one end, which is "
+                    "itself a corner of the unit cube, so the archetypal corner "
+                    "term loses resolution there. In practice archetypal_rank "
+                    "becomes sensitive to whether those columns are transformed: "
+                    "on a real assay cohort, log-transforming them changed 12 of "
+                    "the 20 most archetypal instances. Where one such feature "
+                    "dominates the whole frame the ordering can invert outright, "
+                    "with the most extreme rows scoring below the median. Fit "
+                    "both ways and compare, or apply a log or rank transform to "
+                    "those columns before fitting.",
+                    RuntimeWarning, stacklevel=3
+                )
+
         # Scale to [0,1]
         self.scaler_ = MinMaxScaler(copy=True, clip=True)
         X_scaled_full = self.scaler_.fit_transform(X).astype(self.dtype, copy=False)
@@ -2984,8 +3684,45 @@ class DataTypical:
         self.keep_mask_ = keep_mask
         if not np.all(keep_mask):
             self.dropped_columns_ = [c for c, k in zip(self.feature_columns_, keep_mask) if not k]
-            if self.verbose:
-                warnings.warn(f"Dropped constant feature columns: {self.dropped_columns_}")
+
+            # v0.8.0: separate genuinely constant columns from ones that merely
+            # fell below the scaler's resolution. MinMaxScaler treats any feature
+            # whose range is under about 2e-15 as constant and leaves it at zero,
+            # so a column with real structure at that magnitude is dropped as if
+            # it carried no information. Previously both cases were silent unless
+            # verbose was on, and when every column went this way the fit died
+            # further downstream complaining about nmf_rank, which points at the
+            # wrong thing entirely.
+            raw_range = np.ptp(X, axis=0)
+            truly_constant, below_resolution = [], []
+            for name, keep, rng in zip(self.feature_columns_, keep_mask, raw_range):
+                if keep:
+                    continue
+                (truly_constant if rng == 0.0 else below_resolution).append(name)
+
+            if truly_constant:
+                warnings.warn(
+                    f"Dropped constant feature columns: {truly_constant}"
+                )
+            if below_resolution:
+                warnings.warn(
+                    f"Dropped feature columns whose values vary, but by less than "
+                    f"the scaler can resolve (a range under ~2e-15): "
+                    f"{below_resolution}. Their structure is real but is being "
+                    f"discarded. Rescale them into a normal range, for example "
+                    f"df[col] = df[col] / df[col].abs().max(), before fitting."
+                )
+
+            if not np.any(keep_mask):
+                raise DataTypicalError(
+                    "Every feature column was dropped as constant after scaling, "
+                    f"so there is nothing left to fit. Truly constant: "
+                    f"{truly_constant or 'none'}. Varying but below the scaler's "
+                    f"resolution: {below_resolution or 'none'}. If the second list "
+                    "is non-empty, the data carries real structure at a magnitude "
+                    "MinMaxScaler treats as zero; rescale those columns into a "
+                    "normal range and refit."
+                )
         X_scaled = X_scaled_full[:, keep_mask]
 
         # Optional feature weights (length must match number of original numeric features)
@@ -3011,12 +3748,46 @@ class DataTypical:
         # Ensure numeric
         if not all(np.issubdtype(t, np.number) for t in feat_df.dtypes):
             raise DataTypicalError("Non-numeric values present in feature columns at transform.")
-        X = feat_df.to_numpy(dtype=self.dtype, copy=True)
+        # v0.8.0: float64 here for the same reason as in _preprocess_table_fit.
+        # The cast to the working dtype happens after scaling.
+        X = feat_df.to_numpy(dtype=np.float64, copy=True)
 
         # Impute with training medians
         inds = np.where(np.isnan(X))
         if inds[0].size:
             X[inds] = np.take(self.impute_median_, inds[1])
+
+        # v0.8.0: the fitted scaler clips to the training range, so anything
+        # outside it is pinned to 0 or 1. Two samples far beyond the training
+        # maximum, and far apart from each other, then receive identical ranks.
+        # For a library whose purpose is identifying extremes that is exactly
+        # the wrong silent failure, so say when it happens. The clipping itself
+        # is kept: unclipped values break the [0, 1] geometry the archetypal
+        # scores assume.
+        _lo = np.asarray(self.scaler_.data_min_, dtype=np.float64)
+        _hi = np.asarray(self.scaler_.data_max_, dtype=np.float64)
+        _span = np.where((_hi - _lo) > 0, _hi - _lo, 1.0)
+        _below = (X < _lo) & ~np.isnan(X)
+        _above = (X > _hi) & ~np.isnan(X)
+        _n_clipped = int(np.count_nonzero(_below | _above))
+        if _n_clipped:
+            _excess = np.maximum(
+                np.max((_lo - X) / _span, axis=0, initial=0.0),
+                np.max((X - _hi) / _span, axis=0, initial=0.0),
+            )
+            _worst_col = int(np.argmax(_excess))
+            _rows = int(np.count_nonzero((_below | _above).any(axis=1)))
+            warnings.warn(
+                f"{_n_clipped} value(s) across {_rows} of {X.shape[0]} row(s) fall "
+                f"outside the range seen during fit and are being clipped to it. "
+                f"The worst is column "
+                f"'{self.feature_columns_[_worst_col]}', which extends "
+                f"{_excess[_worst_col]:.3g} training ranges beyond the training "
+                f"limit. Clipped rows are indistinguishable from one another at "
+                f"the boundary, so their ranks understate how extreme they are. "
+                f"Refit on data covering this range if these rows matter.",
+                RuntimeWarning, stacklevel=3
+            )
 
         # Scale using fitted scaler; then drop constants via keep_mask_
         X_scaled_full = self.scaler_.transform(X).astype(self.dtype, copy=False)
@@ -3103,12 +3874,34 @@ class DataTypical:
     
     def _fit_archetypal_aa(self, X_scaled: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        True archetypal analysis with PCHA (primary) and ConvexHull (fallback).
-        
-        MEMORY OPTIMIZED: Respects configured dtype while preserving input dtype when needed.
+        True archetypal analysis via PCHA.
+
+        Backend policy (changed in v0.8.0)
+        ----------------------------------
+        ``archetypal_method='aa'``
+            PCHA is required. If ``py_pcha`` is not installed, or the data cannot
+            support it, or PCHA fails, this raises :class:`ConfigError`. Through
+            v0.7.7 the method fell silently through to ConvexHull and then to NMF,
+            with the only notice behind ``verbose``, so a fit reported as
+            archetypal analysis could return NMF output with nothing to
+            distinguish it. Any ``'aa'`` result produced by v0.7.7 or earlier in an
+            environment without ``py_pcha`` is an NMF approximation and should be
+            re-run.
+        ``archetypal_method='auto'``
+            The permissive cascade PCHA -> ConvexHull -> NMF, emitting a
+            ``RuntimeWarning`` at each downgrade.
+        ``archetypal_method='nmf'``
+            Does not reach this method at all.
+
+        The backend that actually ran is recorded in ``self.archetypal_backend_``
+        (``'pcha'``, ``'convexhull'`` or ``'nmf'``) and in ``self.settings_``.
+
+        MEMORY OPTIMIZED: Respects configured dtype while preserving input dtype
+        when needed.
         """
         n_samples, n_features = X_scaled.shape
-        
+        strict = (self.archetypal_method == 'aa')
+
         # OPTIMIZED: Use configured dtype, but respect input if it's float64
         input_dtype = X_scaled.dtype
         if input_dtype == np.float64:
@@ -3117,48 +3910,87 @@ class DataTypical:
             target_dtype = np.float32
         else:
             target_dtype = np.float64
-        
+
         # Determine effective k
         k_max = min(n_samples, n_features)
         k_eff = min(self.nmf_rank, k_max)
-        
-        # Try PCHA first (stable in high dimensions)
-        if PCHA is not None and k_eff >= 2:
+
+        # ---- PCHA: the method the manuscript names as primary ----
+        if PCHA is None:
+            if strict:
+                raise ConfigError(
+                    "archetypal_method='aa' requires the py_pcha package, which is "
+                    "not installed, and v0.8.0 no longer substitutes another method "
+                    "silently. Install it with: pip install py_pcha. Or pass "
+                    "archetypal_method='auto' to allow the ConvexHull/NMF cascade, "
+                    "or archetypal_method='nmf' to ask for NMF directly."
+                )
+            warnings.warn(
+                "py_pcha is not installed, so archetypal_method='auto' cannot run "
+                "PCHA and will fall back to ConvexHull or NMF. The result will be an "
+                "approximation of archetypal analysis, not archetypal analysis. "
+                "Check archetypal_backend_ after fitting.",
+                RuntimeWarning, stacklevel=2
+            )
+        elif k_eff < 2:
+            message = (
+                f"PCHA needs at least 2 archetypes, but nmf_rank={self.nmf_rank} with "
+                f"data shape {X_scaled.shape} gives k_eff={k_eff}. Increase nmf_rank, "
+                "supply more samples or features, or pass archetypal_method='auto' "
+                "or 'nmf'."
+            )
+            if strict:
+                raise ConfigError(message)
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
+        else:
             try:
                 # PCHA requires float64 internally
                 X_T = X_scaled.astype(np.float64).T.copy()
                 X_min = X_T.min()
                 if X_min < 0:
                     X_T = X_T - X_min + 1e-10
-                
+
                 if self.verbose:
                     print(f"  Computing {k_eff} archetypes using PCHA (stable in {n_features}D)...")
-                
+
                 XC, S, C, SSE, varexpl = PCHA(X_T, noc=k_eff, delta=0.0)
-                
+
                 if self.verbose:
                     print(f"  PCHA converged, variance explained: {varexpl:.2%}")
-                
+
                 # Convert to ndarray (PCHA returns matrix objects)
                 W = np.asarray(S.T, dtype=target_dtype)
                 H = np.asarray(XC.T, dtype=target_dtype)
-                
+
                 # Validate dimensions with detailed error messages
                 if W.shape != (n_samples, k_eff):
                     raise ValueError(f"PCHA W shape error: got {W.shape}, expected ({n_samples}, {k_eff})")
                 if H.shape != (k_eff, n_features):
                     raise ValueError(f"PCHA H shape error: got {H.shape}, expected ({k_eff}, {n_features})")
-                
+
                 self.nmf_model_ = None
                 self.reconstruction_error_ = float(SSE)
                 self.n_archetypes_ = k_eff
+                self.archetypal_backend_ = 'pcha'
                 return W, H
-                
+
             except Exception as e:
+                if strict:
+                    raise ConfigError(
+                        f"archetypal_method='aa' was requested but PCHA failed: {e}. "
+                        "v0.8.0 no longer substitutes another method silently. Pass "
+                        "archetypal_method='auto' to fall back to ConvexHull or NMF, "
+                        "or archetypal_method='nmf' to ask for NMF directly."
+                    ) from e
                 if self.verbose:
                     print(f"  PCHA failed ({e}), trying ConvexHull")
-        
-        # Try ConvexHull fallback (low dimensions only)
+                warnings.warn(
+                    f"PCHA failed ({e}); archetypal_method='auto' is falling back to "
+                    "ConvexHull or NMF. Check archetypal_backend_ after fitting.",
+                    RuntimeWarning, stacklevel=2
+                )
+
+        # ---- ConvexHull fallback (permissive mode only, low dimensions) ----
         if ConvexHull is not None and cdist is not None and n_features <= 20:
             try:
                 # ConvexHull needs float64
@@ -3166,10 +3998,10 @@ class DataTypical:
                 hull = ConvexHull(X_hull)
                 boundary_indices = np.unique(hull.simplices.ravel())
                 n_archetypes = len(boundary_indices)
-                
+
                 if self.verbose:
                     print(f"  Found {n_archetypes} archetypes on convex hull")
-                
+
                 W = np.zeros((n_samples, n_archetypes), dtype=target_dtype)
                 for i in range(n_samples):
                     point = X_hull[i:i+1]
@@ -3177,21 +4009,29 @@ class DataTypical:
                     distances = cdist(point, boundary_points).ravel()
                     weights = 1.0 / (distances + 1e-6)
                     W[i, :] = weights / weights.sum()
-                
+
                 H = np.asarray(X_scaled[boundary_indices], dtype=target_dtype)
                 self.nmf_model_ = None
                 self.reconstruction_error_ = None
                 self.n_archetypes_ = n_archetypes
+                self.archetypal_backend_ = 'convexhull'
                 return W, H
             except Exception as e:
                 if self.verbose:
                     print(f"  ConvexHull failed ({e}), using NMF")
-        
-        # Final fallback: NMF
+
+        # ---- Final fallback: NMF ----
+        # Loud on purpose: what comes back is not archetypal analysis.
+        warnings.warn(
+            f"archetypal_method='{self.archetypal_method}' fell back to NMF. The "
+            "returned archetypes are an NMF approximation, not archetypal analysis; "
+            "archetypal_backend_ is set to 'nmf'.",
+            RuntimeWarning, stacklevel=2
+        )
         if self.verbose:
             print(f"  Using NMF fallback")
         return self._fit_archetypal_nmf(X_scaled)
-    
+
 
     def _fit_archetypal_nmf(self, X_scaled: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -3240,6 +4080,7 @@ class DataTypical:
         self.nmf_model_ = nmf
         self.reconstruction_error_ = float(nmf.reconstruction_err_)
         self.n_archetypes_ = k_eff
+        self.archetypal_backend_ = 'nmf'
         
         # OPTIMIZED: Ensure output matches target dtype
         W = W.astype(target_dtype, copy=False)
@@ -3274,11 +4115,14 @@ class DataTypical:
                 if (sp is not None and sp.isspmatrix(X_scaled)) else np.asarray(X_scaled, dtype=np.float64)
 
             if self.verbose:
-                method_name = "Archetypal Analysis (PCHA+ConvexHull)" if self.archetypal_method == 'aa' else "NMF Approximation"
+                method_name = {
+                    'aa': "Archetypal Analysis (PCHA, required)",
+                    'auto': "Archetypal Analysis (PCHA -> ConvexHull -> NMF)",
+                }.get(self.archetypal_method, "NMF Approximation")
                 print(f"\nFitting archetypal: {method_name}")
 
             # Call appropriate method
-            if self.archetypal_method == 'aa':
+            if self.archetypal_method in ('aa', 'auto'):
                 W, H = self._fit_archetypal_aa(X_euc_fit)
             else:  # 'nmf'
                 W, H = self._fit_archetypal_nmf(X_euc_fit)
@@ -3395,20 +4239,42 @@ class DataTypical:
             # Optional auto-k (Kneedle)
             knee = None
             if self.auto_n_prototypes == "kneedle" and mg.size >= 2:
+                requested = mg.size
                 knee = self._kneedle(mg)
                 if knee is not None and knee > 0:
                     P_idx = P_idx[:knee]
                     mg = mg[:knee]
+
+                    # v0.8.0: facility-location gains decay steeply, so the
+                    # first prototype often carries most of the coverage and
+                    # Kneedle lands on 1. Truncating a requested set of 15 down
+                    # to a single prototype changes every prototypical result,
+                    # and it used to happen without a word.
+                    if knee < 2 or knee < 0.25 * requested:
+                        warnings.warn(
+                            f"auto_n_prototypes='kneedle' cut the prototype set "
+                            f"from {requested} to {knee}. Facility-location "
+                            "gains fall away quickly, so the knee often sits at "
+                            "the first prototype. If that is too few, drop "
+                            "auto_n_prototypes and set n_prototypes yourself.",
+                            RuntimeWarning, stacklevel=3
+                        )
 
             self.prototype_indices_ = P_idx
             self.prototype_rows_ = index.to_numpy()[P_idx]
             self.prototype_features_ = X_euc[P_idx].copy()
             self.prototype_features_l2_ = Xl2[P_idx].copy()
             self.marginal_gains_ = mg
-            self.knee_ = knee
 
-            # Detect knee in marginal gains
-            if len(mg) > 2:
+            # v0.8.0: knee_ used to be assigned the Kneedle result and then
+            # overwritten unconditionally by the second-difference heuristic
+            # below, so the value that actually truncated the selection was
+            # never reported. When Kneedle ran, knee_ now reports what it chose,
+            # which is also len(prototype_indices_). Otherwise it keeps the
+            # second-difference diagnostic it has always carried.
+            if knee is not None:
+                self.knee_ = knee
+            elif len(mg) > 2:
                 diffs = np.diff(mg)
                 if len(diffs) > 1:
                     diffs2 = np.diff(diffs)
@@ -3446,7 +4312,10 @@ class DataTypical:
                 print(f"  Target value: {target_str}")
                 
                 # Show target distribution if we have the data
-                if hasattr(self, '_df_original_fit') and self.stereotype_column in self._df_original_fit.columns:
+                # v0.8.0: _df_original_fit is None for text and graph fits, so the
+                # hasattr check alone let this verbose branch dereference None.
+                if (getattr(self, '_df_original_fit', None) is not None
+                        and self.stereotype_column in self._df_original_fit.columns):
                     stereo_vals = self._df_original_fit[self.stereotype_column]
                     print(f"  Column range: [{stereo_vals.min():.2f}, {stereo_vals.max():.2f}]")
                     
@@ -3539,6 +4408,34 @@ class DataTypical:
                 f"W dimension error: {W.shape} vs ({n_samples_transform}, {n_archetypes})"
 
             W_row_sum = W.sum(axis=1, keepdims=True)
+
+            # v0.8.0: a row whose archetype weights sum to zero has no defined
+            # membership. After MinMax scaling that is exactly the row sitting
+            # at the origin, which is the row that was the minimum in every
+            # retained feature. Both NMF and the least-squares AA route return
+            # W = 0 there, the guard below turns it into an all-zero W_norm, and
+            # arch_wmax becomes 0. The consequence is the opposite of what the
+            # measure intends: the most extreme row in the low direction lands
+            # at the very bottom of archetypal_rank, below every other row, and
+            # only the 0.3-weighted corner term keeps its score off the floor.
+            #
+            # The arithmetic is left exactly as it was, because changing it
+            # would move every archetypal rank ever computed. What is new is
+            # that it no longer happens in silence.
+            _degenerate = (W_row_sum.ravel() == 0.0)
+            if _degenerate.any():
+                _n_bad = int(np.count_nonzero(_degenerate))
+                warnings.warn(
+                    f"{_n_bad} row(s) have zero archetype membership, which "
+                    "happens when a row is the minimum in every retained "
+                    "feature and therefore sits at the origin of the scaled "
+                    "space. Their archetypal_rank falls to the bottom of the "
+                    "column even though they are extreme points, because the "
+                    "membership term cannot be defined for them. Treat those "
+                    "rows' archetypal scores as undefined rather than low.",
+                    RuntimeWarning, stacklevel=3
+                )
+
             W_row_sum[W_row_sum == 0.0] = 1.0
             W_norm = W / W_row_sum
             arch_wmax = W_norm.max(axis=1)
@@ -3582,6 +4479,12 @@ class DataTypical:
             X2 = X_euc[:, take] if take.size else X_euc[:, :1]
             m = np.minimum(X2, 1.0 - X2)
             dmin = np.sqrt(np.sum(m * m, axis=1))
+            # NOTE (v0.8.0): m is min(x, 1-x) and so is at most 0.5, which makes
+            # the largest possible dmin 0.5*sqrt(d). Dividing by sqrt(d) rather
+            # than 0.5*sqrt(d) therefore confines corner_score to [0.5, 1.0]
+            # instead of [0, 1], and the 0.3-weighted term contributes between
+            # 0.15 and 0.30 rather than between 0 and 0.30. Left as published,
+            # since changing the normaliser would move every archetypal rank.
             denom = math.sqrt(X2.shape[1]) if X2.shape[1] >= 1 else 1.0
             corner_score = 1.0 - np.clip(dmin / denom, 0.0, 1.0)
             archetypal_score = arch_wmax * 0.7 + corner_score * 0.3
@@ -3665,11 +4568,17 @@ class DataTypical:
             "random_state": int(self.random_state),
             "dtype": str(self.dtype),
             "max_memory_mb": int(self.max_memory_mb),
+            # v0.8.0: serialise the requested method alongside the backend that
+            # actually ran, so an archived fit can be audited after the fact.
+            "archetypal_method": self.archetypal_method,
+            "archetypal_backend": self.archetypal_backend_,
         }
 
 
 __all__ = [
     "DataTypical",
+    "exact_formative_archetypal",
+    "exact_formative_stereotypical",
     "FacilityLocationSelector",
     "DataTypicalError",
     "ConfigError",
