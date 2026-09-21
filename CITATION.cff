@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use RobustPixelMaker in your research, please cite it as below."
+type: software
+title: RobustPixelMaker
+abstract: >-
+  Reproducible, leakage-safe feature selection that works directly on image
+  pixels. RPM finds the informative region of a set of registered scientific
+  images, working on the pixels themselves with no collapse to engineered
+  features, and returns a robust predictor that reads only that region, a
+  reproducible selected region, and an honest performance estimate. It
+  reports whether a reproducible region exists at all, rather than always
+  producing one.
+authors:
+  - family-names: Barnard
+    given-names: Amanda S
+    # Add your ORCID here to have GitHub link it from the citation panel:
+    # orcid: "https://orcid.org/0000-0000-0000-0000"
+version: 0.2.0
+date-released: "2026-09-15"
+license: MIT
+repository-code: "https://github.com/amaxiom/RobustPixelMaker"
+url: "https://github.com/amaxiom/RobustPixelMaker"
+keywords:
+  - feature selection
+  - stability selection
+  - scientific imaging
+  - reproducibility
+  - image analysis
+  - nested cross-validation
