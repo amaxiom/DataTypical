@@ -191,8 +191,8 @@ class TestDocumentationCoherence:
     @pytest.mark.parametrize(
         "name",
         ["formative_method", "exact_formative_archetypal",
-         "exact_formative_stereotypical", "split_half_rho",
-         "archetypal_backend_", "archetypal_method"],
+         "exact_formative_prototypical", "exact_formative_stereotypical",
+         "split_half_rho", "archetypal_backend_", "archetypal_method"],
     )
     def test_public_surface_is_documented(self, name):
         """Anything the code exposes should be findable in the README."""

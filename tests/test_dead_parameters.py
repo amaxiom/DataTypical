@@ -201,13 +201,31 @@ class TestParametersThatDoWork:
         assert np.max(np.abs(
             plain["archetypal_rank"] - weighted["archetypal_rank"])) > 1e-9
 
-    def test_random_state_moves_a_shapley_fit(self):
+    def test_random_state_moves_a_sampled_shapley_fit(self):
+        """
+        v0.8.0: the archetypal formative values are exact by default and so no
+        longer depend on the seed. random_state is still a live parameter for
+        the sampled path, which is what this pins.
+        """
         df = _frame(40, 5)
         common = dict(shapley_mode=True, shapley_n_permutations=6,
                       shapley_compute_formative=True,
+                      formative_method="monte_carlo",
                       archetypal_method="nmf", nmf_rank=3, n_prototypes=5)
         a = DataTypical(random_state=0, **common).fit_transform(df)
         b = DataTypical(random_state=999, **common).fit_transform(df)
         assert np.max(np.abs(
             a["archetypal_shapley_rank"].fillna(0)
             - b["archetypal_shapley_rank"].fillna(0))) > 1e-12
+
+    def test_random_state_does_not_move_the_default_archetypal_formative(self):
+        """The other half of the same fact: exact means seed-independent."""
+        df = _frame(40, 5)
+        common = dict(shapley_mode=True, shapley_n_permutations=6,
+                      shapley_compute_formative=True,
+                      archetypal_method="nmf", nmf_rank=3, n_prototypes=5)
+        a = DataTypical(random_state=0, **common).fit_transform(df)
+        b = DataTypical(random_state=999, **common).fit_transform(df)
+        np.testing.assert_allclose(
+            a["archetypal_shapley_rank"].fillna(0).to_numpy(),
+            b["archetypal_shapley_rank"].fillna(0).to_numpy(), atol=1e-12)

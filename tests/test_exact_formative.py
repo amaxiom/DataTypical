@@ -154,12 +154,21 @@ class TestMonteCarloConvergesToIt:
 
 
 class TestTheOptIn:
-    def test_the_default_is_unchanged(self):
+    def test_the_default_is_exact(self):
+        """Changed in v0.8.0: sampling did not converge, so it is no longer the default."""
         dt = DataTypical(random_state=1, **KW)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             dt.fit_transform(_frame())
-        assert dt.formative_method == "monte_carlo"
+        assert dt.formative_method == "exact"
+        assert dt.shapley_info_["archetypal_formative"]["method"] == "exact"
+
+    def test_monte_carlo_is_still_reachable(self):
+        """The old behaviour has to stay available to reproduce a pre-0.8.0 result."""
+        dt = DataTypical(formative_method="monte_carlo", random_state=1, **KW)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dt.fit_transform(_frame())
         assert dt.shapley_info_["archetypal_formative"]["method"] == "monte_carlo"
 
     def test_exact_is_reproducible_across_seeds(self):
@@ -219,14 +228,18 @@ class TestTheOptIn:
         np.testing.assert_allclose(
             dt.Phi_archetypal_formative_.sum(axis=1), expected, atol=1e-6)
 
-    def test_the_other_two_stay_monte_carlo(self):
-        """Only the archetypal game has the structure for a closed form."""
+    def test_all_three_games_are_exact_under_the_default(self):
+        """
+        The archetypal and stereotypical games reduce outright. The
+        prototypical one does not reduce but it decomposes, which is enough.
+        """
         dt = DataTypical(formative_method="exact", random_state=1, **KW)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             dt.fit_transform(_frame())
         assert dt.Phi_prototypical_formative_ is not None
-        assert "method" not in dt.shapley_info_.get("prototypical_formative", {})
+        for game in ["archetypal_formative", "prototypical_formative"]:
+            assert dt.shapley_info_[game]["method"] == "exact", game
 
     @pytest.mark.parametrize("bad", ["wibble", "exactly", "MC", ""])
     def test_an_unknown_method_is_rejected(self, bad):
@@ -352,7 +365,19 @@ class TestExactStereotypical:
             dt.fit_transform(df)
         assert "Stereotypical formative: exact closed" in capsys.readouterr().out
 
-    def test_the_default_still_samples(self):
+    def test_monte_carlo_still_samples_when_asked(self):
+        rng = np.random.default_rng(0)
+        df = pd.DataFrame(rng.normal(size=(40, 4)), columns=list("abcd"))
+        df["Age"] = rng.integers(30, 85, 40).astype(float)
+        kw = dict(KW)
+        kw.update(stereotype_column="Age", nmf_rank=4, n_prototypes=10)
+        dt = DataTypical(formative_method="monte_carlo", random_state=1, **kw)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dt.fit_transform(df)
+        assert dt.shapley_info_["stereotypical_formative"]["method"] == "monte_carlo"
+
+    def test_the_stereotypical_default_is_exact(self):
         rng = np.random.default_rng(0)
         df = pd.DataFrame(rng.normal(size=(40, 4)), columns=list("abcd"))
         df["Age"] = rng.integers(30, 85, 40).astype(float)
@@ -362,12 +387,14 @@ class TestExactStereotypical:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             dt.fit_transform(df)
-        assert dt.shapley_info_["stereotypical_formative"]["method"] == "monte_carlo"
+        assert dt.shapley_info_["stereotypical_formative"]["method"] == "exact"
 
-    def test_the_prototypical_game_stays_monte_carlo(self):
+    def test_the_prototypical_game_is_exact_too(self):
         """
-        Its value is a mean of per-member maxima over the other members, so the
-        coalition does not reduce to an order statistic. No closed form.
+        Its value is a mean of per-member maxima, which does not reduce to an
+        order statistic the way a mean of minimum games does. It decomposes
+        instead: see tests/test_exact_prototypical.py for the enumeration
+        check. Here we only pin that the estimator uses it.
         """
         rng = np.random.default_rng(0)
         df = pd.DataFrame(rng.normal(size=(40, 4)), columns=list("abcd"))
@@ -376,4 +403,4 @@ class TestExactStereotypical:
             warnings.simplefilter("ignore")
             dt.fit_transform(df)
         assert dt.Phi_prototypical_formative_ is not None
-        assert "method" not in dt.shapley_info_["prototypical_formative"]
+        assert dt.shapley_info_["prototypical_formative"]["method"] == "exact"

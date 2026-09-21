@@ -125,18 +125,22 @@ class TestUnconvergedEstimatesWarn:
     def test_the_default_permutation_count_warns(self):
         """
         The archetypal formative value function does not converge at 100
-        permutations. This is the headline of the convergence finding.
+        permutations. This is the headline of the convergence finding, and the
+        reason v0.8.0 stopped sampling it by default. The warning now belongs
+        to the sampled path, so the test asks for that path explicitly.
         """
         dt = DataTypical(shapley_mode=True, shapley_compute_formative=True,
                          archetypal_method="nmf", nmf_rank=8, n_prototypes=20,
-                         shapley_n_permutations=100, random_state=1)
+                         shapley_n_permutations=100, random_state=1,
+                         formative_method="monte_carlo")
         with pytest.warns(RuntimeWarning, match="has not converged"):
             dt.fit_transform(_frame(60, 6))
 
     def test_the_warning_quotes_the_correlation(self):
         dt = DataTypical(shapley_mode=True, shapley_compute_formative=True,
                          archetypal_method="nmf", nmf_rank=8, n_prototypes=20,
-                         shapley_n_permutations=100, random_state=1)
+                         shapley_n_permutations=100, random_state=1,
+                         formative_method="monte_carlo")
         with pytest.warns(RuntimeWarning) as record:
             dt.fit_transform(_frame(60, 6))
         message = " ".join(str(w.message) for w in record)
@@ -147,7 +151,8 @@ class TestUnconvergedEstimatesWarn:
         """The values are fine; the ordering is not. The message must say so."""
         dt = DataTypical(shapley_mode=True, shapley_compute_formative=True,
                          archetypal_method="nmf", nmf_rank=8, n_prototypes=20,
-                         shapley_n_permutations=100, random_state=1)
+                         shapley_n_permutations=100, random_state=1,
+                         formative_method="monte_carlo")
         with pytest.warns(RuntimeWarning) as record:
             dt.fit_transform(_frame(60, 6))
         message = " ".join(str(w.message) for w in record)
