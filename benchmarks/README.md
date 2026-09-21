@@ -114,11 +114,44 @@ pass `--show`/`--no-save` to change the output mode.
 ## Headline result
 
 On the synthetic data with known structure, **formative (archetypal) instances
-recover the ground-truth structure-defining points** (AUROC well above chance)
-**while down-ranking the redundant distractor outliers** (AUROC below chance),
-and are the **only model-free score with a positive structural-significance signal
-on the fidelity metric** -- distinct from random and from coverage-based methods
-(prototypical formative, coreset), which target density instead. Isolation Forest
-also finds the corners, but it flags the distractors just as readily: it detects
-*anomalies*, not *load-bearing instances*. The two roles are complementary, and
-the metric must match the question.
+recover the ground-truth structure-defining points while down-ranking the
+redundant distractor outliers**. Under the v0.8.0 exact computation, at n=1000
+over 5 seeds:
+
+| scorer | structure AUROC (want high) | distractor AUROC (want low) |
+| --- | --- | --- |
+| Formative (archetypal) | **0.923** | **0.039** |
+| Isolation Forest | 0.940 | 0.861 |
+| Coreset (facility location) | 0.477 | 0.415 |
+| Formative (prototypical) | 0.083 | 0.282 |
+| KNN-Shapley | 0.208 | 0.457 |
+| Influence functions | 0.005 | 0.626 |
+
+Isolation Forest matches it on the corners and fails completely on the
+distractors. That is the whole distinction: it detects *anomalies*, not
+*load-bearing instances*.
+
+> **The kNN fidelity signal metric does not agree, and the disagreement is
+> informative.** Under the exact computation the archetypal formative signal is
+> -0.021, while Isolation Forest scores +0.118, by far the largest. Isolation
+> Forest is also the scorer that ranks distractors highest. That is not a
+> coincidence: the distractors are tight redundant clusters, so removing one
+> wholesale leaves its members with no near neighbours and kNN reconstruction
+> error explodes. The signal metric therefore rewards ranking the distractors
+> *highly*, which is the opposite of what it is supposed to measure whenever
+> redundant clusters are present. The recovery AUROCs above have actual ground
+> truth; the signal metric does not. Read them in that order.
+>
+> Through v0.7.7 this metric reported a positive signal for the formative score.
+> That was computed from the Monte Carlo estimator, whose ordering at 100
+> permutations is sampling noise: five seeds gave five different top formative
+> prototypes on Wine. The sign of that number was not a finding.
+
+## Style
+
+All figures use **viridis**, legends **outside** the axes, **standard (unrotated)
+tick labels** (long categorical labels go on the y-axis via horizontal bars;
+rotation is used only if labels would otherwise overlap), and **autoscaled** axes
+(log scales where values span orders of magnitude), via the helpers in
+`common.py` (`apply_rcparams`, `viridis_colors`, `style_axes`,
+`legend_outside`).
