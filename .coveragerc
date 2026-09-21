@@ -1,0 +1,32 @@
+# Coverage is measured BROADLY (source = the project root) and filtered at
+# report time. Narrowing the measurement scope to a single module on this
+# machine corrupts numpy sentinels and makes passing tests fail, so do not
+# replace this with --cov=datatypical.py.
+#
+#   python -m coverage run -m pytest tests/ -q
+#   python -m coverage report -m
+
+[run]
+source = .
+branch = False
+omit =
+    tests/*
+    benchmarks/*
+    pypi_staging/*
+    github_upload/*
+    DRAFTS/*
+    examples/*
+    docs/*
+    setup.py
+
+[report]
+include =
+    datatypical.py
+    datatypical_viz.py
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    if TYPE_CHECKING:
+precision = 1
+show_missing = True

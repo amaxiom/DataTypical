@@ -1,283 +1,504 @@
 # Changelog
 
-All notable changes to RobustPixelMaker. Versions follow semantic versioning.
+All notable changes to DataTypical are recorded here.
 
-## 0.2.0 (2026-09-15)
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-A minor version rather than a patch, because one default moves: `auto_target` goes from
-0.4 to 0.15, which changes results for anyone using `lam_scale="auto"`. Everything else
-is additive, and **selection behaviour is unchanged by default**. Every option added
-here is opt-in, and the defaults are pinned by tests asserting they reproduce previous
-output exactly.
+---
 
-The full standard-tier suite was rerun to confirm that: across 957 paired rows, score,
-coverage and stability are identical to the previous release for every arm except
-`rpm_mlp`, and identical on all 759 synthetic rows including that one. `rpm_mlp`'s
-earlier real-data numbers were substantially the full-image baseline, and its corrected
-numbers are lower and honest (see the evidence section).
+## [0.8.0] - 2026-09-21
 
-The other theme is that four separate calls could not do what was asked and returned
-something plausible instead of saying so: a penalty search that ran inside the
-aggregation it fed, a mask that never closed, a default prior that quietly imposed the
-wrong operating point, and a threshold that could not be reached. All four are fixed or
-reported. The Fixed entries below record each one.
+Nineteen fixes and four additions. Two of the defects invalidate results
+silently, so anyone who has run `archetypal_method='aa'`, or fitted data whose
+values are not of order 1, should read the first two entries.
 
-### Added
-
-- **Type annotations on the public surface, with a `py.typed` marker.** 81% of public
-  functions are now fully annotated, up from 32%, and the package type checks clean
-  under mypy. Both halves matter: `py.typed` makes RPM's annotations part of every
-  user's type-check run, so a diagnostic in RPM's own source surfaces in the output of
-  anyone checking their code. Before the cleanup a consumer type checking a six-line
-  script saw 44 errors, 43 of them ours. The marker and the clean run are one
-  commitment, and two tests pin it. `mypy` is now a `dev` extra.
-- **`CITATION.cff`**, so GitHub offers the "Cite this repository" button, matching
-  RobustSignalMaker. The ORCID line is present and commented, ready to fill in.
-- **`model=` on `RobustPixelMaker`**, the parity gap with RobustModelMaker. The model
-  fitted on the selected region is now a choice: `None` (the mask's own head, the
-  default and previous behaviour), a name from `mask`, `rf`, `logreg`, `ridge`, `gb`,
-  `svm`, `knn`, or any scikit-learn estimator, which is cloned rather than mutated
-  across folds. It is fitted inside the same leakage-safe folds. A test pins the
-  invariant that makes it safe: choosing a model never changes WHICH patches are
-  selected, only what is fitted on them. New module `downstream.py`.
-- **`head="mlp"` on `SoftMaskSelector`** and the aggregators: one hidden layer under the
-  same freeze-base scheme, with hand-derived gradients verified against central
-  differences to 5e-9. Repairs the case where a purely interactive signal made the
-  linear head prune the entire informative region (FINDINGS sec.16, 17).
-- **`lam_scale="auto"`**, which searches `lam` for a mask that actually discriminates
-  rather than trusting a fixed penalty weight. Needed because a more expressive frozen
-  head uses every input, so at the linear head's `lam` the MLP mask never closed at all.
-  `lam_used_` reports the operating point.
-- **`ranking()` and `top_patches()`** on the aggregators, breaking selection-frequency
-  ties on `strength_`, the mean gate value over the same fits. `pi_` takes at most B+1
-  values and saturates, so a small top-k request previously returned patches in index
-  order. Worth +0.11 AUC at 5% coverage on MNIST.
-- **`score_panel`** in the benchmark suite: every selection scored by four downstream
-  models spanning different inductive biases, not one random forest.
-- **`run_coverage_frontier.py`**, `run_nonlinear_control.py`, `run_timing.py`,
-  `machine_state.py`, and the `rf_boot` and `rpm_mlp` competitor arms.
-- **Every benchmark summary table now carries a `selects` column**, `no` wherever an
-  arm kept the whole image (coverage at or above 0.999), with a note saying such a row
-  must be compared against `full` rather than against the selectors. The suite
-  published an arm that selected nothing and no column said so: `rpm_mlp` returned
-  coverage 1.000 on both multiclass datasets, scoring the full-image score with
-  stability 1.000, and read down the score column it looked tied for best. A metric
-  that rewards not selecting will be won by a method that does not select, and the
-  protection is a column in the table rather than knowing about the trap. `rfe`,
-  `anova` and `lasso` reach coverage 1.000 on some datasets legitimately and are
-  marked identically. FINDINGS sec.20.
-
-- **`head`, `hidden`, `lam_scale` and `auto_target` reach every selector and the
-  `RobustPixelMaker` facade.** The README documented `head="mlp"` as a feature while
-  the facade took no such argument and forwarded none, so the documented option was
-  unreachable from the documented entry point: using it meant bypassing the facade and
-  constructing a selector by hand. All four are now plumbed through the facade, both
-  fold estimators and both aggregators, and validated at construction in each, because
-  `_one_fit` deliberately swallows resample-fit exceptions and would otherwise report a
-  mistyped `head` as "every one of the N resample fits failed". FINDINGS sec.19.
-- **`coverage_realised_` and `coverage_target_met_` on both aggregators**, reported in
-  `stability_report()`, with a warning when `target_coverage` is missed by more than 25%
-  relative. `pi_` takes at most B+1 distinct values, so reachable coverages are
-  quantised and ties make the grid coarse: on blood at B=12 the lowest reachable
-  coverage is 0.245, so a request for 0.12 silently returned double it.
-  `coverage_target_met_` is None when nothing was requested, so no request never reads
-  as a failed one. FINDINGS sec.22.
-- **Documentation guards**, because three documents had rotted quietly. Every doc
-  quoting "N tests" is checked against `pytest --collect-only`; every backtick-quoted
-  name in a README argument table must be a parameter the facade accepts; forwarding is
-  checked separately from acceptance, since accepting an argument and dropping it before
-  it reaches the selector is the half-fix that would keep the README true and change
-  nothing; the benchmarks method table must list every registered selector; and a count
-  written beside a list must match the list.
-- Regression tests in `tests/test_maskfill.py` pinning the above: a level filter must
-  return the constant on constant data for four kernel shapes including three
-  non-uniform ones, contrast filters must return exactly zero on constant data for
-  non-uniform kernels, the denominator is checked to be mass and not count on a kernel
-  chosen so the two rules disagree, the contrast branch is checked against a directly
-  computed L2 reference, a window with evidence but no filter mass must be invalid,
-  and uniform kernels must be unchanged. Every pre-existing level-filter test used
-  `ones / 9`, the one kernel shape for which the old code was right, which is why the
-  suite stayed green through a release.
-
-### Changed
-
-- **`auto_target` now defaults to 0.15, not 0.4.** It is a prior on coverage used by
-  `lam_scale="auto"`, and 0.4 is far too high for sparse selection, which is what this
-  library is for. At 0.4, against a true informative fraction of 0.062, recovery F1 on
-  the shipped synthetic control halved (1.000 to 0.441) and coverage inflated to 0.234.
-  At 0.15 the control is recovered exactly as well as under a fixed `lam` (F1 1.000,
-  coverage 0.062) while a multiclass mask that a fixed `lam` leaves wide open still
-  closes. There is no trade-off between the two; the old default was simply wrong.
-  Note the dial is coarse: the `lam` ladder has six geometric rungs, so 0.25 and 0.40
-  select the same rung and give identical answers. FINDINGS sec.21.
+The version is a minor bump rather than a patch because the release adds
+`formative_method`, `archetypal_method='auto'`, the `archetypal_backend_` and
+`split_half_rho` attributes, and two public functions. Nothing was removed and
+no existing call signature changed, so v0.7.7 code runs unmodified, with the one
+deliberate exception recorded under `archetypal_method='aa'` below.
 
 ### Fixed
 
-- **Five places where the code knew a type the signature did not**, all found by type
-  checking rather than by testing, and all fixed by stating the invariant rather than
-  silencing the checker: `classes` is now derived inside the branch that indexes it
-  instead of beside a separate condition; `mask_img` is converted once like `X` already
-  was, in three fill helpers; `patch_ids` is no longer rebound from an array-like to a
-  set; and the two attributes that are only valid after `fit` now say so. None was a
-  live bug, and each was a place a reader had to reconstruct an invariant the code
-  never stated.
-- **`lam_scale="auto"` ran its penalty search inside every bootstrap resample, so
-  the aggregation measured two things and reported one.** `_inner_kwargs` forwarded
-  `lam_scale` to each resample fit, which meant each replicate chose its own `lam`.
-  Stability selection counts how often a patch survives at a FIXED operating point,
-  so `pi_` was confounding "which patches matter" with "which `lam` this replicate
-  landed on" while still being thresholded and plotted as the former. `lam` is now
-  calibrated once per `fit`, on the data `fit` was given (the outer training split
-  under nested CV, so no leakage), and held fixed across resamples and lenses.
-  Measured on 20 matched-coverage cells: mean pairwise Jaccard 0.375 to 0.455
-  (+0.081, better in 13/20, p = 0.097, a direction rather than a result), score
-  unchanged (p = 0.70), and at least 3.4x faster because `B` ladders become one.
-  `lam_scale="fixed"`, the default, constructs no probe and is unchanged. Two tests
-  pin it. FINDINGS sec.18.
+- **Silent substitution of NMF for archetypal analysis.** Through v0.7.7, when
+  `py_pcha` was not installed, `archetypal_method='aa'` fell through to
+  ConvexHull (itself skipped whenever `n_features > 20`) and then to NMF. The
+  only notice was behind `verbose`, which is `False` by default, while the
+  verbose method label still read "Archetypal Analysis (PCHA+ConvexHull)". A fit
+  reported as archetypal analysis could therefore return NMF output with nothing
+  to distinguish it.
 
-- **`maskfill.renormalised_convolve` rescaled by kept pixel COUNT, which is exact
-  only for a uniform kernel.** For any other kernel it charges a dropped pixel the
-  average weight instead of its own. On a flat image beside a straight gap edge a
-  uniform 7x7 kernel was exact, a Gaussian 7x7 sigma 1.5 was 74% wrong and a
-  Gaussian 9x9 sigma 1.0 was 99.9% wrong, fabricating exactly the edge this module
-  exists to prevent, and reporting it as valid. The rescaling is now by kept filter
-  MASS, and the correct mass differs by branch:
-  - LEVEL filters use the observed filter weight `sum_kept f / sum f`. This is an
-    identity, not a tuning choice: on constant data the numerator is `x * mass_kept`,
-    so the constant comes back exactly for any kernel.
-  - CONTRAST filters use the observed L2 norm `sqrt(sum_kept f^2 / sum f^2)`. Signed
-    weights cancel, and the absolute mass is not the right substitute either: both
-    count and L1 mass go as N/c for a random kept subset and so over-correct by
-    roughly a square. Measured over 8 seeds recovering the full-data response of a
-    random zero-mean 5x5 filter on smooth data, L2 gives 79.9% RMS error against
-    count's 93.2% under 30% scattered dropout, and 57.3% against 75.2% under patch
-    dropout. Level filters improve 2.2x (scattered) and 1.4x (patch dropout).
-- **Validity required only one kept pixel, not enough filter mass to divide by.** A
-  window whose kept pixels all sit where the kernel is near zero now returns 0.0 with
-  `valid` False instead of a large number manufactured from a near-zero denominator.
+  `archetypal_method='aa'` now raises `ConfigError` when PCHA is unavailable or
+  fails, rather than substituting another method.
 
-  Uniform kernels are bit-comparable before and after, which is what makes this a fix
-  rather than a change of definition, and a regression test pins that. No benchmark
-  result changes: `renormalised_convolve` is called only by `masked_conv_features`
-  and the `fabricated_edge` diagnostic, neither of which feeds the recorded runs, and
-  the M3 diagnostic is unchanged (renorm 4.8e-16 against zero-fill 1.91) because on a
-  flat image the contrast re-centring returns zero whatever the scaling.
+  **Any `'aa'` result produced by v0.7.7 or earlier in an environment without
+  `py_pcha` is an NMF approximation and should be re-run.** A saved fit can be
+  checked without re-running it: `nmf_model_ is not None` means NMF ran,
+  `nmf_model_ is None` with a numeric `reconstruction_error_` means PCHA ran,
+  and `nmf_model_ is None` with `reconstruction_error_ is None` means ConvexHull
+  ran.
 
-  Found by porting the sibling fix from RobustSignalMaker, which hit the same defect
-  on 2026-09-01. RSM normalises its contrast branch by L1 mass and keeps doing so:
-  the L2 rule was ported there on 2026-09-07 and lost on that library's own criterion
-  (truth recovery of the selection, not fidelity of the response), 21 paired wins to 9
-  with 10 ties, because its default lens set includes a Savitzky-Golay derivative for
-  which the exchangeable-residual argument behind L2 does not hold. An earlier draft of
-  this entry called RSM's calibration "weaker", which the measurement refutes; the two
-  libraries differ deliberately, each matching its own lens set. The level half is
-  correct in both.
-- The frequency map's tie-breaking, the MLP head's non-pruning, and a one-off gradient
-  rescale that was tried, measured, found to move the cross-head `lam` ratio only from
-  3.0x to 2.5x, and removed rather than kept because it looked principled.
-- **`target_coverage` missed silently, and the test that should have caught it
-  permitted the miss.** `examples/ex4` compares the SHAPE of two selections, which only
-  means something at matched coverage, and asked for 0.12 on both datasets. It got
-  0.245 on blood and 0.122 on pneumonia, and described the comparison as matched.
-  Contiguity is exactly what coverage inflates: pneumonia scores 0.50 at coverage 0.122
-  and 0.83 at 0.245. Forced to exactly 6 patches each with `top_patches`, blood is 1.00
-  and pneumonia 0.50, the same gap, so the claim was true and untested as stated. The
-  test was named `..._hits_requested_operating_point` and asserted
-  `abs(coverage - target) < 0.15`, which at target 0.1 admits a miss larger than the
-  target itself. It now asserts the real contract, that no reachable coverage is nearer
-  than the one chosen. FINDINGS sec.22.
+- **The working `dtype` was applied to the raw input, before scaling.** The
+  feature matrix was read with `to_numpy(dtype=self.dtype)`, which defaults to
+  `float32`, and only then imputed and scaled. Because the scaled matrix lives
+  in [0, 1], that early cast bought no memory and cost a great deal:
 
-- **Six source lines in `FINDINGS.md` cited run logs that are not published.** Console
-  logs are gitignored, 879 KB of transcript whose substance is already in the CSVs, so
-  all six resolved on this machine and nowhere else. Two of them were the only cited
-  evidence for sec.20. Fixed in both directions: four now cite the tracked CSV that
-  already carried the numbers, and the three small logs that carry numbers nothing else
-  does are now tracked by an explicit `.gitignore` exception. A test refuses any
-  citation of an unpublished file.
-- **Twenty-seven result files had no provenance entry.** `benchmarks/results/` holds
-  runs from three months and several defaults, and the files do not say which is which:
-  `run_coverage_frontier.py` alone was run six times, every run writing the same generic
-  title and the same table shape, three of them superseded by a later fix. Opening the
-  wrong one returns a number that was true of a version that no longer exists.
-  `PROVENANCE.md` now names every tracked file with its date and its section, and a test
-  fails on any that it does not.
+    * values above roughly 3.4e38 became `inf`, and the fit died inside sklearn
+      with a bare "Input X contains infinity or a value too large for
+      dtype('float32')" that never named DataTypical or the column;
+    * values below roughly 1.2e-38 underflowed to zero, every column then read
+      as constant, and the fit died complaining about `nmf_rank`, which points
+      at the wrong thing entirely;
+    * most quietly of all, a feature carrying its signal beyond the 7th
+      significant digit lost that signal outright. A measurement of order 1000
+      varying in its 8th digit had its spread collapse to exactly zero and was
+      then dropped as a constant column, with no error and, unless `verbose` was
+      on, no warning.
 
-### Changed, in the evidence rather than the code
+  Reading, imputing and scaling now happen in float64, and only the scaled
+  result is cast to the working `dtype`. The memory contract is unchanged, since
+  the large matrices passed downstream are still stored at the requested
+  precision. `dtype` is now a memory setting only, and no longer changes results:
+  `float32` and `float64` fits agree.
 
-Three conclusions in `FINDINGS.md` were corrected by better experiments, and the
-corrections matter more than the additions:
+  DataTypical's ranks are scale-free by construction, and they now demonstrably
+  are. Rescaling or offsetting a feature leaves every rank bit-identical, where
+  before it moved them by up to 3e-5.
 
-- **Section 14**: the suite scored every selection with a random forest, which shares a
-  model family with the `rf` competitor. Judged by a linear model instead, the
-  RPM-minus-RF margin shifts significantly (p < 0.0001). Section 6's verdict that RF
-  won was reading an unpaired 0.002 difference; paired, the two are indistinguishable
-  (p = 0.87).
-- **Section 15**: no comparison in the suite separated the learned mask from the
-  bootstrap wrapper around it. Held fixed, the mask adds nothing over RF importance on
-  real data (+0.0003, p = 1.000) and is less stable (0.67 against 0.89).
-- **Section 16**: the shipped synthetic control's label is linear and the mask's head
-  was linear, so the benchmark where RPM wins largest was one where its inductive bias
-  is correct by construction. On interactive labels the linear head recovered exactly
-  nothing. The nonlinear axis is now a standing component of the smoke tier.
-- **Section 20**: the suite published an arm that selected nothing. `rpm_mlp` returned
-  coverage 1.000 on both multiclass datasets, scoring the full-image score with
-  stability 1.000, and read down the score column it looked tied for best. Corrected,
-  its real-data score falls from 0.954 to 0.912 on blood and from 0.984 to 0.922 on
-  organa, at coverage 0.105 and 0.087. The lower numbers are the honest ones.
-- **Section 23**: comparing methods at their own operating points is not a method
-  comparison. `rpm_mlp` reads as worst in the headline table, 0.876 against 0.950, while
-  sitting at roughly a quarter of everyone else's coverage. At matched coverage it is
-  statistically indistinguishable from random-forest importance (p = 0.28), though it
-  loses clearly on stability in 19 of 20 cells. `run_coverage_frontier.py` is the
-  instrument for that comparison, and it flips the verdict.
+- **Dropping a feature column was announced only under `verbose`, and losing
+  every column reported the wrong cause.** Dropping a feature materially changes
+  an explainability result, so it now always warns. The warning also separates
+  the two cases that were previously conflated: a genuinely constant column, and
+  one that varies by less than `MinMaxScaler` can resolve (a range under about
+  2e-15), which is real structure being discarded. If every column goes this
+  way, the fit now raises naming both lists and what to do about it, instead of
+  failing further downstream with a message about `nmf_rank`.
 
-## 0.1.0 (2026-09-02)
+- **The formative Shapley ranking does not converge at the default
+  permutation count, and nothing said so.** Two fits of the same data differing
+  only in `random_state`, at the documented default of 100 permutations,
+  produced archetypal formative rankings with a Spearman correlation of **0.02**
+  and a top-ten overlap of **1 of 10**, where chance is 2 of 10. The single most
+  formative instance differed between the two. Raising the count to 1000 gave
+  rho 0.32, still far from reproducible.
 
-First release. Registered-regime (`registered=True`) pixel selection, complete with the
-evaluation and packaging the rest of the RobustMaker family shares.
+  The cause is not a coding error. The estimator is an unbiased Monte Carlo
+  Shapley estimator and the values it produces sum correctly, which is what the
+  existing `additivity_error` checks. But summing correctly says nothing about
+  whether the *order* of the samples is stable, and the order is what gets
+  reported as the formative instances.
+
+  Every Shapley estimate now carries a **`split_half_rho`** in `shapley_info_`:
+  the permutations are accumulated in two independent halves and the rank
+  correlation between them is reported. It costs one extra array and no extra
+  sampling. When it falls below 0.7 a `RuntimeWarning` says the ranking is
+  largely sampling noise at that permutation count, and distinguishes the values
+  from the ordering so the message cannot be misread.
+
+  **Any formative result computed at the default 100 permutations should be
+  re-examined**, checking `split_half_rho` and raising
+  `shapley_n_permutations` until it stops moving.
+
+- **Two properties of the archetypal measure that were never stated.** Neither
+  is a coding error and neither has been changed, because changing either would
+  move every archetypal rank the library has produced. Both now announce
+  themselves, and both are documented in the README under "Reading the ranks".
+
+    * **A row that is the minimum in every retained feature ranks last.** After
+      MinMax scaling such a row sits at the origin, where neither backend can
+      define an archetype membership: both return a zero weight vector. Its
+      score then falls to the corner term alone and it lands at the bottom of
+      `archetypal_rank`, below every other row, despite being an extreme point.
+      Measured on both `nmf` and `aa`. A `RuntimeWarning` now names how many
+      rows are affected and says to read their archetypal scores as undefined
+      rather than low.
+
+    * **The measure inverts once a single row dominates a feature's range.**
+      MinMax scaling compresses the remaining rows against one end, and that end
+      is itself a corner of the unit cube, so the corner term rewards the
+      compressed bulk as much as the extreme point. Measured across six seeds:
+      an outlier at 3 to 5 standard deviations ranks above the cloud median
+      every time; one at 30 standard deviations ranks *below* it every time. A
+      `RuntimeWarning` now fires when the middle 98% of any feature spans under
+      a fifth of its full range, which separates the two regimes cleanly, and
+      suggests a log or rank transform. This regime is common in assay and
+      biomarker data.
+
+- **The ranks are scores, not percentiles, and only one of the three spans
+  [0, 1].** `archetypal_rank` has a structural floor near 0.4 at `nmf_rank=3`,
+  because its membership term is the maximum of a row-normalised vector over
+  `nmf_rank` entries and so cannot fall below `1/nmf_rank`, while its corner
+  term is normalised by `sqrt(d)` when the largest attainable distance is
+  `0.5*sqrt(d)` and so occupies only [0.5, 1]. `prototypical_rank` has a similar
+  floor. Only `stereotypical_rank` uses the full interval. The README now gives
+  the attainable range of each and says to compare ranks against each other
+  rather than against zero. The arithmetic is unchanged.
+
+- **`auto_n_prototypes` recognised exactly one spelling.** Only the literal
+  string `'kneedle'` did anything. A near miss such as `'knee'`, or any other
+  value, was accepted and then ignored, so a caller who asked for automatic
+  selection quietly got none. It now accepts `None` or `'kneedle'` and raises
+  on anything else.
+
+- **`register_ideal()` stored a vector that nothing reads.** No scoring path
+  touches `ideals_`, so registering an ideal never changed a rank, an
+  explanation or any other output, despite the name. It is a leftover from the
+  pre-v0.4 stereotype mechanism. The method still validates and stores, so
+  existing code keeps working, but it now emits a `DeprecationWarning` saying
+  plainly that it has no effect and pointing at `stereotype_column` with
+  `stereotype_target`, which is the supported mechanism.
+
+- **`scale`, `distance_metric` and `similarity_metric` did nothing at all.**
+  All three were declared as constructor parameters, carried in `to_config()`
+  and `get_params()`, and **never read anywhere in the module**. Any value was
+  accepted, including nonsense such as `scale='wibble'`, and the pipeline went
+  on using MinMax scaling, Euclidean distance and cosine similarity regardless.
+  A caller asking for standardised features, or a cosine distance, silently got
+  neither and had no way to tell.
+
+  Rather than change the numerics in a bug-fix release, the implemented value is
+  now the only one accepted: `scale='minmax'`, `distance_metric='euclidean'`,
+  `similarity_metric='cosine'`. Anything else raises `ConfigError` explaining
+  what the code actually does. Results for anyone using the defaults are
+  unchanged, because the defaults were always what ran.
+
+- **A non-finite formative value was reported as a confident 0.5.** The rank
+  normaliser compared `max - min > 1e-12` to decide whether the values varied.
+  Every comparison against NaN is False, so a NaN landed in the equal-values
+  branch and *every sample* was reported as 0.5, a perfectly ordinary mid-rank
+  standing in for "could not be computed". Non-finite values now stay NaN, the
+  finite rows are still ranked among themselves, and a warning names the
+  significance type and counts the affected rows.
+
+- **`auto_n_prototypes='kneedle'` silently cut the prototype set to one.**
+  Facility-location gains fall away steeply, so the first prototype carries most
+  of the coverage and the knee sits at index 1. On every dataset tried, asking
+  for 15 prototypes and enabling Kneedle returned exactly 1, which changes every
+  prototypical result and every figure drawn from it. The truncation now warns
+  when it keeps fewer than two prototypes, or under a quarter of those selected,
+  and names both counts. The Kneedle maths is unchanged.
+
+- **`knee_` never reported the value that shaped the result.** It was assigned
+  the Kneedle index and then overwritten unconditionally by a second,
+  unrelated second-difference heuristic. When Kneedle runs, `knee_` now reports
+  what it chose, which is also `len(prototype_indices_)`. Otherwise it keeps the
+  diagnostic it has always carried.
+
+- **State from one fit survived into the next on the same estimator.**
+  Several attributes were written only on the path that produced them and read
+  back with `hasattr`, so nothing cleared them:
+
+    * refitting on clean data still reported the previous fit's
+      `dropped_columns_` and `missingness_`;
+    * refitting with `stereotype_column=None` kept the previous stereotype
+      source;
+    * fitting text after tabular left `_df_original_fit`, `feature_columns_`,
+      `keep_mask_` and `scaler_` pointing at the tabular frame, so `heatmap()`
+      and `profile_plot()` would have described the *wrong data* instead of
+      refusing, and `transform_text()` would not have noticed the missing
+      vectorizer.
+
+  Every public fit entry point now clears this state first.
+
+- **`fast_mode` was only honoured on the first fit.** The presets were applied
+  once per object behind an `_fast_mode_applied` flag, so changing `fast_mode`
+  and refitting left the previous mode's `archetypal_method`,
+  `shapley_n_permutations`, `shapley_top_n` and `shapley_compute_formative` in
+  place. They are now reconsidered on every fit. A value the presets filled in
+  is released only while it still holds exactly what they put there, so an
+  explicit choice made in between is preserved. The one case that cannot be
+  distinguished, assigning the same value the preset already chose, is
+  documented in the tests.
+
+- **`to_config()` silently dropped `feature_weights`.** A configuration saved
+  and reloaded therefore produced a *different fit*. On a five-feature frame the
+  round trip moved `archetypal_rank` by 0.33 and `prototypical_rank` by 0.50, on
+  a scale where both live in [0, 1]. That is a different answer, not a rounding
+  difference. `to_config()` now carries every init parameter, and a test fails if
+  a future parameter is added without being included.
+
+- **`transform()` clipped out-of-range data onto the training boundary in
+  silence.** The fitted scaler is built with `clip=True`, so anything beyond the
+  range seen during `fit` is pinned to 0 or 1. Two samples ten times apart from
+  each other, both far beyond the training maximum, therefore received identical
+  ranks, with nothing to indicate it. For a library whose purpose is identifying
+  extreme instances that is precisely the wrong silent failure.
+
+  The clipping itself is kept, because unclipped values break the [0, 1]
+  geometry the archetypal scores assume. What is new is that it reports itself:
+  how many values across how many rows were clipped, which column is worst, and
+  how many training ranges beyond the limit it extends. Missing values, which
+  are imputed rather than clipped, are not counted.
+
+- **`max_memory_mb` was only validated on the chunked path.** A nonsensical
+  budget such as `0` was accepted without complaint on any dataset small enough
+  to skip chunking, then raised much later on a larger one. It is now checked at
+  fit time.
+
+- **An edge naming a node outside `range(n_nodes)` was accepted in silence.**
+  NetworkX simply added the extra node, so every topology feature was then
+  computed on a larger graph than the node features described. Pagerank over the
+  requested nodes summed to less than one (0.82 in a three-node example with one
+  stray index), and betweenness and closeness were measured against phantom
+  nodes. The returned columns looked perfectly ordinary. Out-of-range and
+  negative indices now raise, naming the offending values.
+
+  A misshapen edge array now raises as well, and the one genuinely ambiguous
+  case, a (2, 2) array that could be two edges as rows or two nodes as columns,
+  warns which reading it used instead of choosing silently.
+
+- **`UnboundLocalError` in stereotypical Shapley explanations.** The
+  stereotypical value function was defined inside the core-samples branch of
+  `_fit_shapley_explanations` but was also called from the secondary-samples
+  branch. When `subsample_indices` was supplied, `core_samples` came from
+  `_union_core_samples` and need not intersect the requested samples, so it
+  could be empty while `secondary_samples` was not. The crash fired for
+  `shapley_mode=True` with a `stereotype_column` and `shapley_top_n` less than
+  the number of rows, and never at `shapley_top_n == len(df)`, which is why it
+  went unnoticed.
+
+- **A non-numeric `stereotype_column` failed deep inside pandas.** A reasonable
+  request such as `stereotype_column='Menopause'` on a Yes/No column raised
+  `ValueError: could not convert string to float: 'No'` several frames below the
+  caller, with no mention of the column at fault. The column is now validated
+  where it is selected, at fit time, whatever `shapley_mode` is set to. Ordered
+  categoricals are encoded by category order and booleans become 0.0/1.0;
+  anything else raises `ConfigError` naming the column and the offending values.
+
+- **A `stereotype_column` on text data was ignored when no `text_metadata` was
+  supplied.** `_get_stereotype_source_text` held the right error but nothing
+  called it, so the fit silently fell back to extremeness. This is the same
+  class of silent substitution as the archetypal backend defect. Found while
+  writing the v0.8.0 test suite.
+
+- **Verbose text and graph fits crashed on a `stereotype_column`.** The verbose
+  reporting block guarded `_df_original_fit` with `hasattr` alone, but the
+  attribute exists and is `None` for text and graph fits, so the branch
+  dereferenced `None`. Found while writing the v0.8.0 test suite.
 
 ### Added
 
-- **`RobustPixelMaker`** estimator facade and the `run_pipeline` function, with
-  `fit`/`predict`/`predict_proba`, `summary`, `coverage`, `pi_map`, `stability_report`,
-  `selected_pixels`, `compare_to_baseline` and `save`.
-- **Leakage-safe nested cross-validation** (`nested_cv.py`) in which the selection is
-  refitted inside every outer fold, with task inference, `GroupKFold` support and
-  out-of-fold prediction accumulation.
-- **Learnable patch mask** (`masking.py`): Hard-Concrete L0 gates (default) or
-  sigmoid with L1, trained VTF-style by freezing the head before pruning the mask.
-  Binary, multiclass and regression, with an optional spatial-smoothness prior.
-- **Bootstrap stability selection** (`selection.py`): per-patch selection frequencies
-  over bootstrap, half-subsample or Shah-Samworth complementary-pair resamples, an
-  explicit `target_coverage` operating point, and the `ambiguous_fraction` go/no-go
-  diagnostic for whether a reproducible region exists at all.
-- **Representation marginalisation** (`representations.py`, `RepresentationEnsembleSelector`):
-  the double bootstrap over data resamples and lenses, with per-lens frequency maps and
-  a measured `representation_agreement`.
-- **Renormalised absent masking** (`maskfill.py`): partial convolution extended with
-  automatic filter re-centring for zero-mean contrast filters, plus the
-  `fabricated_edge` diagnostic on a known-answer flat image.
-- **Chance-corrected stability** (`adjusted_jaccard`, `expected_jaccard`), because raw
-  Jaccard rewards simply retaining more of the image.
-- **Reproducibility controls** (`reproducibility.py`, `config.py`): deterministic
-  per-stream seed derivation, `enable_determinism`, and device detection that falls
-  back to CPU with a warning rather than failing.
-- Six worked scientific examples, a nine-component benchmark suite runnable with one
-  command, 142 tests at 98% statement coverage at the time of that release, and MIT licensing.
 
-### Known limitations
+- **`formative_method='exact'`**, a closed-form computation of the archetypal
+  formative Shapley values with no sampling at all.
 
-- `registered=False` (per-image conditional masks for unregistered fields of view)
-  raises `NotImplementedError`; it is a documented extension point, not a silent guess.
-- Input is single-channel: RGB images must be converted before use.
-- No torch or GPU backend yet. The numpy backends are designed to be extended by one,
-  not replaced.
-- No corruption or distribution-shift robustness delta is reported yet.
+  The value function is a mean of "minimum" games, one per archetype, and
+  Shapley is linear in the value function, so the whole thing has a closed form.
+  For one archetype, sorting the samples by distance gives, for the sample at
+  ascending rank r,
 
-### Notes on evidence
+      phi_r = -d_r / n  +  sum over k > r of (d_k - d_r) / ((k + 1) * k)
 
-Benchmark conclusions, including the negative results (bootstrap aggregation does not
-rescue an underpowered study; a random forest selected leaner regions than RPM on two
-of the shipped datasets; the coverage confound in raw stability), are recorded in
-`benchmarks/FINDINGS.md`. Two adversarial bug sweeps and every defect they found are
-recorded in the Fixed entries above.
+  Both sums are suffix sums, so it costs O(n log n) per archetype: **0.006
+  seconds at n = 5000**, against minutes of sampling that still would not
+  converge. Verified against exhaustive coalition enumeration to machine
+  precision, and the values satisfy efficiency exactly.
+
+  **The prototypical game is exact too, and it was the one that needed it
+  most.** It is a mean of maxima, so it does not collapse the way the other two
+  do, but it decomposes. The maximum is attained at the first neighbour present
+  in the coalition, so
+
+      max(0, max_j s_ij) = sum over r of s_i,(r) * 1[l_(r) in S, l_(1..r-1) not in S]
+
+  which rewrites the value function as a weighted sum of games of the form
+  `1[A subset of S, B disjoint from S] / |S|` with `|A| = 2`. Shapley is linear
+  in the value function, and each of those little games has a closed form
+  depending only on `|B|` and the player's role. Accumulating the "neither"
+  term as a scalar and the "in B" term as a suffix sum gives **O(n^2)** after
+  the sorts, against O(2^n) for enumeration. Exposed as
+  `exact_formative_prototypical`.
+
+  Measured cost: 0.6 s at n = 500, 7 s at n = 2000, 21 s at n = 5000, 94 s at
+  n = 10,000, 372 s at n = 19,000. Memory is bounded by computing the coefficient tables in blocks
+  and by never forming the n by n similarity matrix, which would be 16 GB at
+  n = 45,000.
+
+  Why it mattered: on the Wine dataset at 100 permutations, five seeds gave
+  **five different top formative prototypes**, with pairwise rank correlations
+  of 0.03 to 0.17 and a top-ten overlap of 0 or 1 out of 10 in nine of the ten
+  seed pairs. Verified against exhaustive coalition enumeration, using the
+  shipped value function itself, on random, positive-orthant, antipodal,
+  duplicated, zero-row and all-identical inputs.
+
+  **This is the default from v0.8.0.** Sampling is still reachable with
+  `formative_method='monte_carlo'`, which reproduces a pre-0.8.0 result:
+
+      DataTypical(shapley_mode=True, shapley_compute_formative=True,
+                  formative_method='monte_carlo')
+
+  **This changes numbers.** A formative ranking produced by v0.7.7 or earlier
+  will not match one produced by v0.8.0, and the v0.8.0 one is correct: the
+  sampled ordering correlated 0.40 to 0.55 with the exact answer on real
+  cohorts, and 0.19 with itself across seeds.
+
+  It also covers the **stereotypical** formative values, whose value function is
+  a plain mean over the coalition and so reduces to
+
+      phi_i = (1/n) * [ c_i + (c_i - mbar_i) * (H_n - 1) ]
+
+  with `c_i` the deviation from the median, `mbar_i` the mean of `c` over the
+  other samples and `H_n` the nth harmonic number. A numeric `stereotype_target`
+  adds a constant term. Verified against enumeration for all three target modes.
+
+  The **prototypical** game does not reduce: its value is a mean of per-member
+  maxima over the other members, so a coalition does not collapse to an order
+  statistic. It stays Monte Carlo, and the split-half diagnostic still applies
+  to it.
+
+  New public functions `exact_formative_archetypal(X, archetypes)` and
+  `exact_formative_stereotypical(target_values, target, median)`.
+
+- **`archetypal_method='auto'`**, the permissive cascade PCHA to ConvexHull to
+  NMF that `'aa'` used to perform silently. Each downgrade now emits a
+  `RuntimeWarning`.
+
+- **`archetypal_backend_`**, a public attribute recording which backend actually
+  produced the archetypes: `'pcha'`, `'convexhull'` or `'nmf'`. It is also
+  written into `settings_` alongside the requested `archetypal_method`, so an
+  archived fit can be audited after the fact.
+
+- **`py_pcha` is now a declared dependency** in `requirements.txt` and
+  `install_requires`. It was required for the headline method but was declared
+  nowhere, which is how the silent fallback went unnoticed.
+
+- **A pytest suite**, discoverable through `pytest.ini`, with `.coveragerc`
+  configured to measure broadly and filter at report time. 692 tests, 99.5%
+  statement coverage (`datatypical.py` 99.4%, `datatypical_viz.py` 100%).
+
+- **Invariant tests** asserting the properties the ranks claim: exact row-order
+  invariance, exact scale and offset invariance, agreement between
+  `fit_transform` and `fit` then `transform`, agreement between a selective fit
+  and the matching column of a full fit, and Shapley efficiency, symmetry and
+  dummy. The v0.7.7 streaming rewrite was also checked against the generic
+  re-evaluation path it replaced, and agrees to 2e-16, as claimed.
+
+- **Correctness tests for the parts that had none**: graph topology values
+  against hand-computed graphs, the facility-location selector against brute
+  force on a small problem (greedy reaches 98% of the optimum, well above the
+  0.632 submodularity bound), chunked distances against unchunked across six
+  memory budgets, and each visualisation against the data it claims to show.
+
+### Changed
+
+- `to_config()` reports `version` as `"0.8.0"`.
+- The verbose archetypal method label now names the policy in force rather than
+  always claiming PCHA+ConvexHull.
+
+### Documentation
+
+- **The stereotypical formative ranking carries no information beyond the
+  stereotype column.** The closed form above is *affine* in `c_i`, so the
+  ranking is a monotone transform of the column itself, with a measured Pearson
+  correlation of 1.0000000000. Both axes of the stereotypical dual-perspective
+  plot are therefore driven by the same single column, which makes that panel a
+  curve rather than a scatter. This is a property of the value function, not of
+  the new implementation: the Monte Carlo estimate was always a noisy version of
+  the same quantity. It is the same circularity already noted for
+  `stereotypical_rank` itself, now shown to apply to the formative axis too.
+  The archetypal formative axis is genuinely distinct by comparison, correlating
+  0.83 with a simple distance-to-nearest-archetype proxy rather than 1.0.
+
+- Recorded that `stereotypical_rank` is a deterministic, monotone function of
+  `stereotype_column` alone (Methods 2.3.1, eq. 26):
+  `s_stereo_i = 1 - |y_i - tau| / max_j |y_j - tau|`. Placing an outcome-derived
+  quantity in that column and then evaluating the resulting rank against that
+  outcome on held-out rows is circular, and returns a perfect correlation that
+  means nothing. This is by design: stereotypical significance depends on an
+  external specification of what counts as interesting, unlike archetypal and
+  prototypical significance, which derive from the intrinsic geometry of the
+  data.
+
+### Not a defect
+
+- `stereotypical_rank` was investigated and found to match the published
+  equation exactly. Measured on a real cohort with `stereotype_column='Age'` and
+  `stereotype_target=55`, the Spearman correlation with `-|Age - 55|` is
+  +1.000000 and no value of Age maps to more than one rank. The behaviour is
+  pinned by tests so it is not "fixed" by mistake later.
+
+### Known gaps
+
+- Ten statements in `datatypical.py` are not covered by the test suite because
+  they are unreachable: defensive guards on a zero-width feature subset inside
+  the explanation closures (the coalition walk never produces one), a
+  `stereotype_target` string other than `'min'`/`'max'` after validation has
+  already rejected those, a dtype branch in `_fit_components` whose input is
+  always cast to float64 first, and a knee branch whose condition contradicts
+  its enclosing test. They are left in place and left uncovered rather than
+  marked as excluded.
+
+---
+
+## [0.7.7] - 2026-06-03
+
+### Changed
+
+- Streaming formative-Shapley computation. Each Monte Carlo permutation now
+  updates the value functions incrementally along the growing coalition instead
+  of recomputing them from scratch at every prefix. Per-fit complexity drops
+  from O(M*n^2) to O(M*n) for archetypal and stereotypical significance, and
+  from O(M*n^3) to O(M*n^2) for prototypical. Output is numerically identical to
+  v0.7.6; only runtime changes. The formative step at n = 10,000 completes in
+  seconds rather than hours.
+- Console output is ASCII-only, so verbose logs and the test suites run cleanly
+  under any terminal encoding, including Windows cp1252.
+
+---
+
+## [0.7.6]
+
+### Added
+
+- `selected_significance` parameter, to compute one significance type at a time.
+
+### Fixed
+
+- Prototype feature storage, so `transform()` on new data uses the correct
+  vectors.
+- Full Shapley analysis (formative and explanations) now runs on text data
+  paths.
+- Iterator exhaustion in all text fit and transform methods.
+- Local/global index mismatch in stereotypical Shapley explanations.
+- Clearer error messages when a significance type was not fitted.
+
+---
+
+## [0.7]
+
+### Added
+
+- `shapley_mode` parameter. When `True`, computes explanations and formative
+  instances.
+- Dual rankings: `*_rank` (actual) alongside `*_shapley_rank` (formative).
+- Value functions for convex hull, coverage and extremeness.
+- Parallel Shapley computation.
+- `fast_mode` presets for exploration versus publication.
+
+---
+
+## [0.6]
+
+### Added
+
+- Local explanations via `get_shapley_explanations()`.
+- Global explanations identifying formative instances.
+
+---
+
+## [0.5]
+
+### Added
+
+- Tabular, text and graph support through a unified API.
+- Label column preservation.
+- Graph topology features.
+
+---
+
+## [0.4]
+
+### Added
+
+- User-configurable stereotypes.

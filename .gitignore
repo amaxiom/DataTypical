@@ -1,47 +1,75 @@
-# Byte-compiled and packaging artefacts
+# Python
 __pycache__/
 *.py[cod]
-*.egg-info/
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
 .eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Test and coverage artefacts
-.pytest_cache/
-.coverage
-.coverage.*
-coverage_html/
-htmlcov/
-.tox/
-
-# Cached benchmark datasets: 168 MB, and every loader re-downloads on demand
-benchmarks/data/
-
-# Long-run benchmark logs (results CSVs, summaries and figures ARE tracked).
-# Three exceptions, each a few hundred bytes: they are the ONLY record of numbers
-# that FINDINGS.md quotes, and a citation a reader cannot open is not a citation.
-benchmarks/results/*.log
-!benchmarks/results/tv_pneumonia.log
-!benchmarks/results/pi_diagnostic.log
-!benchmarks/results/b_sweep_breast.log
-benchmarks/results_pre_sweep/
-examples/*.log
-
-# Environments and editors
-.venv/
+# Virtual environments
 venv/
+ENV/
 env/
-.idea/
+
+# IDEs
 .vscode/
+.idea/
 *.swp
+*.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
-desktop.ini
 
-# throwaway venv used by the release check
-.venv-rpmcheck/
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
 
-# mypy cache, created by the type-check guard in tests/test_staging.py
-.mypy_cache/
+# Test outputs
+*.png
+*.jpg
+*.pdf
+test_output/
+
+# Data files (if any)
+*.csv
+*.xlsx
+*.h5
+*.hdf5
+
+# Personal
+/my/
+
+# Temp
+*.tmp
+*.log
+
+# Release staging (built locally; not source)
+github_upload/
+
+# Coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+
+# Credentials: never commit, never upload
+pypi_token.txt
+*token*
+.pypirc
