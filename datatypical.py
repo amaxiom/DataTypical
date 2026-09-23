@@ -1,5 +1,5 @@
 """
-DataTypical v0.8.0 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.8.1 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
@@ -141,6 +141,17 @@ try:
 except Exception:
     ConvexHull = None
     cdist = None
+
+# py_pcha calls np.mat, which NumPy REMOVED in 2.0. Restoring the alias is
+# what makes archetypal_method='aa' work on a current NumPy at all: without
+# it a fresh install raises, and before v0.8.0 it fell through to ConvexHull
+# silently, which is how published results were computed on the wrong
+# backend without anyone noticing. np.mat is exactly np.asmatrix, so this
+# restores a removed spelling rather than changing behaviour: PCHA returns
+# bit-identical archetypes either way. Additive and guarded, so it cannot
+# disturb an environment that already works.
+if not hasattr(np, "mat") and hasattr(np, "asmatrix"):  # NumPy >= 2.0
+    np.mat = np.asmatrix
 
 try:
     from py_pcha import PCHA
@@ -1304,6 +1315,21 @@ def exact_formative_prototypical(
     n = X.shape[0]
     if n < 2:
         return np.zeros(n, dtype=np.float64)
+
+    # v0.8.1: a NaN cell makes that row's norm NaN, and the selection step
+    # `vals > 0.0` compares False against NaN, so the affected similarities
+    # were DISCARDED rather than propagated. The function then returned an
+    # all-finite, fully rankable vector computed from whichever cells happened
+    # to be clean, and the NaN-bearing sample took an ordinary position in the
+    # ranking. Both sibling exact functions propagate NaN; this one hid it.
+    if not np.all(np.isfinite(X)):
+        n_bad = int(np.count_nonzero(~np.isfinite(X)))
+        raise DataTypicalError(
+            "exact_formative_prototypical received %d non-finite value(s). "
+            "The selection step drops them rather than propagating them, so "
+            "the result would be a confident finite ranking computed from an "
+            "unknown subset of the data. Remove or impute them deliberately, "
+            "or use formative_method='monte_carlo'." % n_bad)
 
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     norms[norms == 0.0] = 1.0
@@ -3368,7 +3394,7 @@ class DataTypical:
             # 0.50, which is a different answer, not a rounding difference.
             "feature_weights",
         ]}
-        cfg["version"] = "0.8.0"
+        cfg["version"] = "0.8.1"
         return cfg
 
     @classmethod
@@ -3612,10 +3638,25 @@ class DataTypical:
         distances = np.abs(values - target)
         max_dist = np.nanmax(distances)
         
-        if max_dist > 1e-12:
+        # v0.8.1: this used to test max_dist against an ABSOLUTE 1e-12. A rank
+        # is scale-free, but the stereotype column is in the user's own units,
+        # so a column of concentrations or mole fractions could have perfect
+        # structure and still fall under the threshold, collapsing every rank
+        # to 1.0 with no warning. The threshold is now relative to the column's
+        # own magnitude, and saying so is no longer optional.
+        _finite = distances[np.isfinite(distances)]
+        _scale = float(np.max(np.abs(_finite))) if _finite.size else 0.0
+        _resolution = np.finfo(np.float64).eps * max(_scale, 1.0) * 8.0
+        if max_dist > _resolution:
             stereotype_rank = 1.0 - (distances / max_dist)
         else:
-            # All values identical or at target
+            warnings.warn(
+                "every value in stereotype_column %r lies at the target to "
+                "within float64 resolution (spread %.3g), so stereotypical_rank "
+                "is 1.0 for every sample and carries no information. If the "
+                "column has real structure at this magnitude, rescale it before "
+                "fitting." % (self.stereotype_column, max_dist),
+                RuntimeWarning, stacklevel=3)
             stereotype_rank = np.ones_like(distances, dtype=np.float64)
         
         # Handle NaN entries

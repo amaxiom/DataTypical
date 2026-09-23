@@ -551,7 +551,7 @@ If you use DataTypical in your research, please cite:
   title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
   year = {2026},
   url = {https://github.com/amaxiom/DataTypical},
-  version = {0.8.0}
+  version = {0.8.1}
 }
 ```
 
@@ -584,7 +584,9 @@ This dual perspective transforms instance significance from pure ranking into ca
 
 ## Development Status
 
-**Current Version**: 0.8.0
+**Current Version**: 0.8.1
+
+**v0.8.1** fixes archetypal analysis on NumPy 2. `py_pcha` calls `np.mat`, removed in NumPy 2.0, so a fresh install of v0.8.0 could not run `archetypal_method='aa'` at all. Through v0.7.7 the same failure fell through to ConvexHull **silently**, so any `'aa'` result from v0.7.7 or earlier on NumPy 2 is a ConvexHull approximation. See [CHANGELOG.md](CHANGELOG.md).
 
 **Recent Updates (v0.8.0)**, nineteen fixes and four additions, see [CHANGELOG.md](CHANGELOG.md):
 - **Fixed a results-invalidating defect**: `archetypal_method='aa'` silently

@@ -7,6 +7,60 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [0.8.1] - 2026-09-23
+
+A bug-fix release. The first entry makes archetypal analysis work again on a
+current NumPy; without it, `pip install datatypical==0.8.0` produces a library
+whose headline method raises.
+
+### Fixed
+
+- **`archetypal_method='aa'` failed on every fresh install.** `py_pcha` calls
+  `np.mat`, which NumPy removed in 2.0, so a fresh `pip install` (which pulls
+  NumPy 2.x) made PCHA raise and v0.8.0 correctly refused to substitute another
+  method. The alias is now restored before `py_pcha` is imported. `np.mat` is
+  exactly `np.asmatrix`, so PCHA returns bit-identical archetypes: verified at
+  0.9160 and 0.6489 on the same data under NumPy 1.26.4 and 2.4.6.
+
+  **This was worse before v0.8.0.** Through v0.7.7 the same failure fell through
+  to ConvexHull silently, so a fit requested as archetypal analysis could return
+  ConvexHull output with nothing to distinguish it. **Any `'aa'` result produced
+  by v0.7.7 or earlier on NumPy 2 is a ConvexHull approximation.** Audit a saved
+  fit without re-running it: `nmf_model_` set means NMF ran, `nmf_model_` None
+  with a numeric `reconstruction_error_` means PCHA, both absent means
+  ConvexHull.
+
+  No version pin was added. Pinning `numpy<2` would strand every user on a
+  superseded NumPy to work around one removed alias in a transitive dependency.
+
+- **`stereotypical_rank` was scale-dependent.** The normalisation was guarded by
+  `max_dist > 1e-12`, an absolute threshold applied to a user-supplied column in
+  the user's own units. A rank is scale-free, but any stereotype column whose
+  spread fell below that (concentrations, mole fractions, probability
+  differences) took the else branch and every sample was assigned rank 1.0, so
+  every sample was reported as maximally stereotypical. No warning was emitted.
+  The threshold is now relative to the column's own magnitude, and the collapse
+  case warns. A column rescaled by 1e-13 now produces an identical ranking.
+
+- **`exact_formative_prototypical` absorbed NaN and returned confident values.**
+  A NaN cell makes that row's norm NaN, and the selection step `vals > 0.0`
+  compares False against NaN, so the affected similarities were dropped rather
+  than propagated. The function returned an all-finite, fully rankable vector
+  computed from whichever cells happened to be clean, and the NaN-bearing sample
+  took an ordinary position in the ranking. Both sibling exact functions
+  propagate NaN; only this one hid it. Non-finite input now raises
+  `DataTypicalError` naming the count.
+
+### Added
+
+- Tests that assert **which backend actually ran**, not merely that a fit
+  succeeded. The v0.8.0 suite had 738 tests and none of them would have caught
+  the NumPy 2 failure, because none of them checked `archetypal_backend_`. That
+  blind spot is the reason a silent backend substitution can reach published
+  results.
+
+---
+
 ## [0.8.0] - 2026-09-21
 
 Nineteen fixes and four additions. Two of the defects invalidate results
