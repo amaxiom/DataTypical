@@ -478,7 +478,7 @@ def test_fit_transform_signals(df_small):
 # ---------------------------------------------------------------------------
 class TestConfig:
     def test_to_config_carries_the_version(self):
-        assert DataTypical().to_config()["version"] == "0.8.0"
+        assert DataTypical().to_config()["version"] == "0.8.1"
 
     def test_round_trip(self):
         dt = DataTypical(nmf_rank=5, n_prototypes=7, stereotype_column="Age")

@@ -20,7 +20,7 @@ from datatypical import DataTypical
 ROOT = Path(__file__).resolve().parent.parent
 STAGING = ROOT / "pypi_staging"
 
-EXPECTED = "0.8.0"
+EXPECTED = "0.8.1"
 
 
 def _read(path):
