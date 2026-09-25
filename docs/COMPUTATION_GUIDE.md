@@ -50,26 +50,42 @@ Version 0.7.2 replaces the ConvexHull-based archetypal formative value function 
 
 ## Dependencies and Optional Packages
 
-### Required Dependencies
+### Declared Dependencies
+
+These are the nine packages in `requirements.txt`, so `pip install datatypical`
+installs all of them.
 
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `numpy` | >= 1.20 | Core numerical operations |
 | `pandas` | >= 1.3 | Data handling and indexing |
+| `scipy` | >= 1.7 | Sparse matrices, ConvexHull |
 | `scikit-learn` | >= 1.0 | NMF, MinMaxScaler, TfidfVectorizer |
-| `joblib` | >= 1.0 | Parallel processing |
-| `threadpoolctl` | >= 3.0 | Thread control for determinism |
+| `matplotlib` | >= 3.3 | Visualization |
+| `seaborn` | >= 0.11 | Visualization |
+| `numba` | >= 0.55 | JIT compilation of distance functions |
+| `networkx` | >= 2.6 | Graph topology features |
+| `py_pcha` | >= 0.1 | Principal Convex Hull Analysis |
 
-### Optional Dependencies (Performance)
+`joblib` and `threadpoolctl` are imported directly, for parallel execution and
+for thread control under `deterministic=True`. They are not in
+`requirements.txt`; they are installed today only because scikit-learn depends
+on them.
 
-| Package | Version | Purpose | Speedup |
-|---------|---------|---------|---------|
-| `numba` | >= 0.56 | JIT compilation of distance functions | 2-5x |
-| `scipy` | >= 1.7 | Sparse matrices, ConvexHull | Required for text |
-| `py_pcha` | >= 0.1 | Principal Convex Hull Analysis | Stable high-D archetypes |
-| `networkx` | >= 2.6 | Graph topology features | Required for graph mode |
+### Degradation Without the Guarded Three
 
-> **Note (v0.7.6)**: FAISS was removed as a runtime dependency. The FAISS integration was tied to an internal method that was not part of the public API and has been removed.
+`numba`, `networkx` and `py_pcha` are imported inside a `try`, so the library
+still imports when they are missing, with defined consequences:
+
+| Missing | What happens |
+|---------|--------------|
+| `numba` | `jit` becomes a no-op and `prange` becomes `range`. The kernels are explicit nested loops written for a compiler, so they still return the same values but run orders of magnitude slower. There is no vectorized fallback path. |
+| `networkx` | Graph topology features are unavailable. |
+| `py_pcha` | `archetypal_method='aa'` raises. It does **not** substitute another method, because a silent substitution is invisible in the output. |
+
+> **Note**: FAISS is not a dependency and is not used anywhere in the codebase.
+> It was removed along with the internal method it served, which was never part
+> of the public API.
 
 ### Detection at Runtime
 
@@ -986,20 +1002,6 @@ def _euclidean_min_jit(X, Y):
 - `cache=True`: Cache compiled function between runs
 - `fastmath=True`: Allow floating-point optimizations
 
-### FAISS Integration
-
-For large datasets (n > 1,000):
-
-```python
-if FAISS_AVAILABLE and n > 1000:
-    # Use FAISS for approximate nearest neighbor
-    index = faiss.IndexFlatIP(d)  # Inner product (cosine after L2 norm)
-    index.add(X_l2.astype(np.float32))
-    D, I = index.search(query, k)
-```
-
-**Speedup**: 10-50x for similarity search on large datasets.
-
 ### Recommended Workflows
 
 **Quick Exploration (< 1 minute)**:
@@ -1135,7 +1137,6 @@ where V is value function cost.
 | Threshold | Value | Purpose |
 |-----------|-------|---------|
 | ConvexHull max dim | 20 | Avoid segfaults in high-D (archetypal fitting fallback only; not used in formative computation from v0.7.2) |
-| FAISS activation | n > 1000 | Use approximate search |
 | Parallel threshold (samples) | n >= 20 | Avoid parallelization overhead |
 | Parallel threshold (features) | d >= 10 | Avoid parallelization overhead |
 
