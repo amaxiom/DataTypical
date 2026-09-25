@@ -5,7 +5,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/datatypical.svg)](https://pypi.org/project/datatypical/)
-[![Tests](https://img.shields.io/badge/tests-692%20passing-21918c.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-748%20passing-21918c.svg)](tests/)
 [![Coverage](https://img.shields.io/badge/coverage-99.5%25-22a884.svg)](tests/)
 
 DataTypical analyzes datasets through three complementary lenses: archetypal (extreme), prototypical (representative), and stereotypical (target-like), with Shapley value explanations revealing why instances matter and which ones create your dataset's structure.
@@ -652,7 +652,10 @@ This dual perspective transforms instance significance from pure ranking into ca
 - Fixed two further silent or crashing paths found while writing the test suite:
   a `stereotype_column` supplied for text data without `text_metadata` was
   ignored, and verbose text or graph fits with a `stereotype_column` crashed.
-- Added a pytest suite: 692 tests, 99.5% statement coverage.
+- Added a pytest suite: 748 tests, 99.5% statement coverage. Coverage is measured
+  with `NUMBA_DISABLE_JIT=1`, because the nine compiled kernels run as machine
+  code and the line tracer cannot see them otherwise; with compilation active the
+  same suite reports 94.4%.
 
 **Recent Updates (v0.7.7)**:
 - Streaming formative-Shapley computation: each Monte Carlo permutation now updates the value functions incrementally along the growing coalition instead of recomputing them from scratch at every step. Per-fit complexity drops from O(M·n²) to O(M·n) for archetypal and stereotypical significance, and from O(M·n³) to O(M·n²) for prototypical. Rankings are numerically identical to v0.7.6 — only runtime changes.

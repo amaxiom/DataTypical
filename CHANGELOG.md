@@ -418,8 +418,11 @@ deliberate exception recorded under `archetypal_method='aa'` below.
   nowhere, which is how the silent fallback went unnoticed.
 
 - **A pytest suite**, discoverable through `pytest.ini`, with `.coveragerc`
-  configured to measure broadly and filter at report time. 692 tests, 99.5%
-  statement coverage (`datatypical.py` 99.4%, `datatypical_viz.py` 100%).
+  configured to measure broadly and filter at report time. 748 tests, 99.5%
+  statement coverage (`datatypical.py` 99.4%, `datatypical_viz.py` 100%),
+  measured with `NUMBA_DISABLE_JIT=1` so that the compiled kernels are visible
+  to the line tracer. With compilation active the same suite reports 94.4%,
+  because those kernels then execute as machine code and are not traced at all.
 
 - **Invariant tests** asserting the properties the ranks claim: exact row-order
   invariance, exact scale and offset invariance, agreement between
