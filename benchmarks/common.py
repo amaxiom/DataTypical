@@ -1,5 +1,5 @@
 """
-common.py -- Shared utilities for DataTypical structural-significance
+common.py: shared utilities for DataTypical structural-significance
 benchmarks (v0.7.7).
 
 Why this module exists
@@ -7,14 +7,14 @@ Why this module exists
 The original Appendix A/C experiments compared DataTypical's *model-free,
 label-free* formative score against significance methods that require a model
 and/or labels (Isolation Forest, influence functions, KNN-Shapley), scored on
-geometric metrics -- one of which (ARE) was built from DataTypical's own
+geometric metrics, one of which (ARE) was built from DataTypical's own
 archetypes. That stacks the deck. This module re-does the comparison cleanly:
 
   * Like-for-like comparator: coreset / facility-location (the only other model-free,
     geometric, label-free significance score). This is the like-for-like test.
   * Reference methods: Isolation Forest, influence functions, KNN-Shapley are
     kept, but reported SEPARATELY and clearly labelled as different-objective
-    (model/label dependent) -- they answer "significant for predicting y under
+    (model/label dependent): they answer "significant for predicting y under
     model M?", not "structurally load-bearing in X?".
   * Metrics are model-free: FLC (coverage) and kNN reconstruction (fidelity).
     The archetype-based ARE is intentionally dropped (it is not independent of
@@ -57,6 +57,7 @@ def apply_rcparams():
         "legend.fontsize":  10,
         "xtick.labelsize":  10,
         "ytick.labelsize":  10,
+        "figure.titlesize": 13,
         "figure.dpi":       130,
         "savefig.dpi":      300,
         "savefig.bbox":     "tight",
@@ -65,9 +66,16 @@ def apply_rcparams():
 
 
 def viridis_colors(n, lo=0.05, hi=0.92):
-    """n evenly spaced colours sampled from viridis (avoids the dark/yellow ends)."""
+    """
+    n colours from viridis. Two categories are always viridis purple (0.0,
+    #440154) and mid-green (0.66, #32b67a), the house pair for any binary
+    comparison; three or more are evenly spaced between lo and hi (avoiding
+    the yellow end).
+    """
     if n <= 1:
         return [plt.cm.viridis(0.5)]
+    if n == 2:
+        return [plt.cm.viridis(0.0), plt.cm.viridis(0.66)]
     return [plt.cm.viridis(x) for x in np.linspace(lo, hi, n)]
 
 
@@ -116,9 +124,9 @@ def make_synthetic_archetypal(n=1000, d=8, k=6, n_corner_per=3,
     Generate data with KNOWN structure-defining points and KNOWN distractors.
 
     k true archetypes are placed at distinct axis extremes (guaranteed convex-hull
-    vertices). A small set of 'corner' points sits next to each archetype -- these
+    vertices). A small set of 'corner' points sits next to each archetype; these
     are the ground-truth structure-defining instances. The remaining points are
-    convex (Dirichlet) mixtures of the archetypes -- redundant interior mass.
+    convex (Dirichlet) mixtures of the archetypes: redundant interior mass.
 
     Because the corners are few and non-redundant, removing them measurably
     degrades coverage/fidelity, so structural significance is detectable here (unlike
@@ -128,7 +136,7 @@ def make_synthetic_archetypal(n=1000, d=8, k=6, n_corner_per=3,
     -------------------------------------------------------------------
     n_distractor_clusters tight clusters of n_distractor_per points each are
     placed OFF the archetype simplex (at 0.65*(A_i + A_j), so their coordinate
-    sum exceeds the simplex total -- a clear density anomaly that Isolation
+    sum exceeds the simplex total, a clear density anomaly that Isolation
     Forest flags). But because n_distractor_per points share each location, any
     single member is expendable: its cluster mates pin down the same geometry,
     so NO individual distractor is structurally significant. They separate
@@ -284,9 +292,9 @@ def datatypical_formative_ranks(df, label_columns, M=50, seed=42, n_jobs=1):
     """DataTypical formative-Shapley scores (model-free, label-free).
 
     A single fit yields both formative axes:
-      'archetypal'   -- instances that create the archetypal (extent/boundary)
+      'archetypal'   : instances that create the archetypal (extent/boundary)
                         structure; expected to align with fidelity metrics.
-      'prototypical' -- instances that create the prototypical (coverage/density)
+      'prototypical' : instances that create the prototypical (coverage/density)
                         structure; expected to align with coverage metrics.
 
     Uses shapley_top_n=1 so the per-sample explanations (unused here) are skipped;
@@ -340,7 +348,7 @@ def coreset_scores(X_l2, batch=512):
     return imp
 
 
-# ---- reference methods (model/label dependent -- reported separately) ----
+# ---- reference methods (model/label dependent, reported separately) ----
 
 def isolation_forest_scores(X, seed=42):
     """Isolation Forest anomaly score (unsupervised MODEL). Higher = more anomalous

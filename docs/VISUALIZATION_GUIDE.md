@@ -1,6 +1,6 @@
 # DataTypical Visualization Guide
 
-**Version 0.7.7**
+**Version 0.8.2**
 
 ## Overview
 
@@ -8,7 +8,9 @@ The `datatypical_viz.py` module provides publication-quality visualizations for 
 
 **Key Principle**: All visualizations display **explanations** (feature attributions showing why samples ARE significant), with flexible ordering options to explore different perspectives.
 
-**Note**: All three visualization functions require a **tabular** DataTypical fit. Text and graph fits do not produce `feature_columns_` or `_df_original_fit`, so calling these functions on a text/graph model raises a `RuntimeError` with a clear message.
+**Fit types**: All three functions serve tabular, text and graph fits. A tabular fit is labelled by the feature columns it kept, a graph fit by its node features plus any topology columns, and a text fit by its fitted vocabulary. (Through v0.8.1, `heatmap()` and `profile_plot()` refused anything but a tabular fit.)
+
+**Sizing and style**: Each plot is drawn around a fixed plot area and the figure grows to fit its labels, so the data never gets squeezed. See [Figure Sizing](#figure-sizing) and [House Style](#house-style).
 
 ---
 
@@ -32,8 +34,10 @@ The `datatypical_viz.py` module provides publication-quality visualizations for 
 **Key Parameters**:
 - `significance`: Which type to visualize ('archetypal', 'prototypical', 'stereotypical')
   - Automatically determines x-axis: `{significance}_rank` and y-axis: `{significance}_shapley_rank`
-- `color_by`: Column to color points by (e.g., property values)
+- `color_by`: Column to color points by (e.g., property values). Two categories are drawn in viridis purple (lower) and green (higher), three to twelve in evenly spaced viridis colours with a legend, and anything continuous with a viridis colour bar
+- `size_by`: Column to scale the markers by
 - `label_top`: Number of top samples to label
+- `plot_size`: Size of the plot area in inches, default 4.1 x 4.0
 
 **Example**:
 ```python
@@ -98,6 +102,11 @@ ax = significance_plot(
 - `order`: How to order samples/rows ('actual' or 'formative')
 - `top_n`: Number of samples to display
 - `top_features`: Optional limit on number of features to show
+- `sample_labels`: The row labels, as a mapping or Series from index to label, or a function of the index. Defaults to the index itself
+- `max_label_length`: Longer row labels lose their middle, keeping both ends (default 24 characters; `None` keeps them whole)
+- `plot_size`: Size of the plot area in inches, default 4.0 x 3.9
+
+When there are more samples or features than can be labelled without the labels touching, the heatmap shows as many as fit and says so once with a `UserWarning`. A `top_n` or `top_features` you pass is always honoured. Every row and column that is shown is labelled.
 
 **Example**:
 ```python
@@ -133,11 +142,10 @@ ax = heatmap(
 - Left-most features matter most for this significance type overall
 - Ensures consistent, interpretable column ordering across all rows
 
-**Color Interpretation**:
-- **Positive values** (warm colors): Features that INCREASE significance
-- **Negative values** (cool colors): Features that DECREASE significance
-- **High absolute values** (bright): Strong feature contributions
-- **Near zero** (neutral): Feature doesn't matter much for this sample
+**Color Interpretation** (viridis):
+- **Yellow** (high values): Features that INCREASE significance most
+- **Purple** (low values): Features that contribute least, or DECREASE significance
+- Read the colour bar for where zero falls
 
 **Pattern Recognition**:
 - **Horizontal patterns** (same color across rows): 
@@ -164,10 +172,10 @@ ax = heatmap(
 
 When using `order='formative'`, you may see:
 ```
-⚠ Warning: X/Y top formative instances have zero Shapley values
-  This occurs when a formative instance is not in the top instances
+Warning: X/Y top formative archetypal instances have zero Shapley values
+  This occurs when a formative instance is not in the top archetypal instances
   (determined by shapley_top_n parameter)
-  These instances CREATE structure but are not themselves highly significant
+  These instances CREATE structure but are not themselves highly archetypal
 ```
 
 **What this means**: The sample is formative (important for structure) but wasn't in the top-N for actual significance, so detailed feature explanations weren't computed. This is expected behavior when using `shapley_top_n` optimization.
@@ -182,7 +190,8 @@ When using `order='formative'`, you may see:
 - X-axis: Features (ordered by importance)
 - Y-axis: Shapley values for this sample
 - Bar heights: Magnitude of feature contribution
-- Bar colors: Normalized feature values (yellow = high value, purple = low value)
+- Bar colors: Normalized feature values (yellow = high value, purple = low value). A text fit colours each bar by the term's scaled weight in the document
+- A bar with no colour: this sample's value of that feature was missing. Only that sample's bar loses its colour
 - Bars above zero: Features increasing significance
 - Bars below zero: Features decreasing significance
 
@@ -190,7 +199,11 @@ When using `order='formative'`, you may see:
 - `sample_idx`: Which sample to profile (use DataFrame index from results)
 - `significance`: Which type to analyze ('archetypal', 'prototypical', 'stereotypical')
 - `order`: Feature ordering method ('local' or 'global')
-- `top_features`: Optional — show only the N most important features
+- `top_features`: Optional: show only the N most important features
+- `max_label_length`: Longer feature names lose their middle (default 24 characters; `None` keeps them whole)
+- `plot_size`: Size of the plot area in inches, default 8.7 x 3.9
+
+With more features than can be labelled legibly, the profile shows as many as fit, with a `UserWarning`. A `top_features` you pass is always honoured; if it asks for more bars than there is room to label, every k-th bar is labelled so that no two labels overprint.
 
 **Example**:
 ```python
@@ -561,7 +574,7 @@ for i, idx in enumerate(unique_mechanisms.index):
 
 **What it means**: This is expected! The sample is important globally but not individually extreme.
 
-**Solution**: Not an error — it reveals the distinction between formative and actual significance. Increase `shapley_top_n` to raise the chance all formative instances have explanations.
+**Solution**: Not an error: it reveals the distinction between formative and actual significance. Increase `shapley_top_n` to raise the chance all formative instances have explanations.
 
 ### "No explanations available for '{significance}'"
 
@@ -569,11 +582,17 @@ for i, idx in enumerate(unique_mechanisms.index):
 
 **Solution**: Refit with `selected_significance=None` (compute all three) or set `selected_significance` to include the type you need.
 
-### "profile_plot()/heatmap() requires a tabular DataTypical fit"
+### "heatmap()/profile_plot() needs feature names, and this estimator has none"
 
-**Cause**: Model was fit on text or graph data, which does not store `feature_columns_` or `_df_original_fit`.
+**Cause**: The estimator has neither fitted feature columns nor a fitted vocabulary, usually because it was never fitted.
 
-**Solution**: These visualizations only work with tabular (DataFrame) input.
+**Solution**: Fit it on a DataFrame, an array, a graph or a list of documents first. (Through v0.8.1 a text or graph fit raised "requires a tabular DataTypical fit" here; both are now supported.)
+
+### "... more than can be labelled legibly at this size"
+
+**Cause**: More features or samples than fit at the current size without their labels touching. The plot shows as many as fit.
+
+**Solution**: Pass `top_features=` or `top_n=` to choose how many, or a larger `plot_size` or `figsize` to fit more.
 
 ### "Global ordering requires {significance} explanations, which are not available"
 
@@ -591,12 +610,35 @@ for i, idx in enumerate(unique_mechanisms.index):
 
 ### Figure Sizing
 
-**Single plot**:
-- Significance plot: `figsize=(6, 5)`
-- Heatmap: `figsize=(8, 6)` or wider if many features
-- Profile plot: `figsize=(12, 5)`
+**By default** each plot is built around a fixed plot area, and the figure is
+whatever size that area plus its labels needs. Long labels therefore enlarge
+the figure rather than squeezing the plot, and colour bars run the plot's full
+height.
 
-**Multi-panel**:
+| Plot | Default plot area (inches) |
+|------|----------------------------|
+| `significance_plot()` | 4.1 x 4.0 |
+| `heatmap()` | 4.0 x 3.9 |
+| `profile_plot()` | 8.7 x 3.9 |
+
+These are the areas the pre-0.8.2 default canvases (6 x 5, 6 x 5 and 12 x 5)
+left for the data, so a default figure looks as it did, without the squeeze.
+
+**`plot_size=(width, height)`** chooses another plot area. Font sizes, marker
+sizes and the colour bar scale with it, so a larger plot keeps its proportions
+instead of making its text and markers look small:
+
+```python
+significance_plot(results, significance='archetypal', plot_size=(6, 6))
+heatmap(dt_model, results, top_n=30, plot_size=(5, 8))
+```
+
+**`figsize=(width, height)`** fixes the whole canvas instead, as it did before
+v0.8.2, and the plot takes what the labels leave. Use it when a journal fixes
+the figure size; use `plot_size` when panels must share a plot area.
+
+**Multi-panel**: with `ax=`, the plot draws into your axes and leaves your
+figure's layout to you:
 ```python
 fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 significance_plot(results, significance='archetypal', ax=axes[0])
@@ -609,6 +651,32 @@ profile_plot(dt_model, top_idx, significance='archetypal', ax=axes[2])
 ax.figure.savefig('figure.png', dpi=300, bbox_inches='tight')
 ax.figure.savefig('figure.pdf', bbox_inches='tight')  # Vector format
 ```
+
+### House Style
+
+Every plot follows the same rules, and the test suite measures them on the
+rendered figures:
+
+- Viridis throughout. Two categories are viridis purple (#440154) and green
+  (#32b67a); an uncoloured scatter is a single viridis blue.
+- One font size per role at the default plot area: 12 points for tick labels
+  and legends, 14 for axis labels, colour-bar labels and titles. They scale
+  together with `plot_size`.
+- Nothing bold.
+- Legends sit outside the plot, without a frame.
+- Titles on one line.
+- Feature names stand upright when they fit, and turn on end only when they
+  would otherwise run into each other.
+- Labels written as names, with spaces rather than underscores. Axis, legend
+  and colour-bar titles start with a capital (a `color_by='fe_concentration'`
+  colour bar is labelled "Fe concentration"); feature and category names keep
+  their own case otherwise, so a name such as `pH` is not altered.
+- No text overlaps the data, a legend or other text.
+
+Importing `datatypical_viz` does not change matplotlib's global `rcParams`
+(through v0.8.1 it did, which restyled every other figure in the session).
+Each size is set on the artist it applies to, so you can still restyle a plot
+after drawing it.
 
 ---
 
@@ -635,7 +703,7 @@ ax.figure.savefig('figure.pdf', bbox_inches='tight')  # Vector format
 3. **Flexible sample ordering**: Order by actual (what IS) or formative (what CREATES) based on question
 4. **Local vs global**: Profile plots can show individual (local) or typical (global) importance patterns
 5. **Complementary views**: Use all three plots together for complete understanding
-6. **Tabular only**: Visualization functions require a tabular fit; text/graph fits are not supported
+6. **Every fit type**: Tabular, text and graph fits are all supported, labelled by their own feature names
 
 ### The Workflow
 

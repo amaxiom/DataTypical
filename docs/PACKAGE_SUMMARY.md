@@ -1,6 +1,6 @@
 # DataTypical Package Summary
 
-**Version 0.7.7** | Comprehensive technical reference
+**Version 0.8.2** | Comprehensive technical reference
 
 ---
 
@@ -14,9 +14,31 @@ DataTypical is a Python library for explainable instance significance discovery 
 
 ---
 
+## What's New in v0.8.2
+
+- **Exact feature-level explanations**: `explanation_method='exact'` (the default) computes all three explanation games in closed form, so explanations cost O(d) per sample and no longer depend on the seed. New public functions `exact_explanations_archetypal`, `exact_explanations_prototypical` and `exact_explanations_stereotypical`. `explanation_method='monte_carlo'` reproduces earlier results.
+- **The stereotypical formative game measures the same distance as the stereotypical rank** for `stereotype_target='max'` and `'min'` (the distance from the column maximum or minimum, not the excess over the median). Numeric targets are unchanged.
+- **Import no longer hangs** where Numba cannot write its cache, and **a real NumPy fallback** runs when Numba is missing or broken; `NUMBA_AVAILABLE` says which path is in use.
+- **Visualisations serve text and graph fits**, take a `plot_size`, scale text and markers with it, and stay legible at large feature counts. Importing `datatypical_viz` no longer changes matplotlib's global settings.
+- **`__version__`**, the single source of the version.
+- `joblib` and `threadpoolctl` are now declared dependencies.
+
+## What's New in v0.8.1
+
+- **Archetypal analysis works on NumPy 2**: `py_pcha` calls `np.mat`, removed in NumPy 2.0; the alias is restored before import.
+- **`stereotypical_rank` is scale-free**: a column with a small spread no longer collapses every rank to 1.0.
+- **`exact_formative_prototypical` refuses NaN** instead of returning confident values.
+
+## What's New in v0.8.0
+
+- **Exact formative values by default** (`formative_method='exact'`): closed forms for all three formative games, with no sampling and no seed dependence.
+- **`archetypal_method='aa'` never substitutes another method**: it raises when PCHA is unavailable. `'auto'` keeps the old cascade with warnings, and `archetypal_backend_` records what ran.
+- **The working `dtype` no longer changes results**: scaling happens in float64 first.
+- Nineteen fixes in all; see the CHANGELOG.
+
 ## What's New in v0.7.7
 
-- **Streaming formative-Shapley computation**: Each Monte Carlo permutation now updates the value functions incrementally along the growing coalition instead of re-evaluating them from scratch at every prefix. Per-fit complexity drops from O(M·n²) to O(M·n) for archetypal and stereotypical significance, and from O(M·n³) to O(M·n²) for prototypical significance. The formative step at n = 10,000 falls from hours to seconds. Output is numerically identical to v0.7.6 — rankings do not change.
+- **Streaming formative-Shapley computation**: Each Monte Carlo permutation now updates the value functions incrementally along the growing coalition instead of re-evaluating them from scratch at every prefix. Per-fit complexity drops from O(M·n²) to O(M·n) for archetypal and stereotypical significance, and from O(M·n³) to O(M·n²) for prototypical significance. The formative step at n = 10,000 falls from hours to seconds. Output is numerically identical to v0.7.6; rankings do not change.
 - **ASCII-only console output**: Verbose logs and the bundled test suites no longer emit Unicode glyphs, so they run cleanly under any terminal encoding (including Windows cp1252).
 
 ## What's New in v0.7.6
@@ -44,7 +66,14 @@ pip install datatypical
 - scikit-learn ≥ 1.0
 - Matplotlib ≥ 3.3
 - Seaborn ≥ 0.11
-- Numba ≥ 0.55
+- Numba ≥ 0.55 (compiled kernels; a NumPy fallback runs without it, with a warning)
+- NetworkX ≥ 2.6
+- py_pcha ≥ 0.1.3 (required for `archetypal_method='aa'`)
+- joblib ≥ 1.0
+- threadpoolctl ≥ 2.0
+
+All are installed by `pip install datatypical`. The installed version is
+`datatypical.__version__`.
 
 ---
 
@@ -54,51 +83,58 @@ pip install datatypical
 ```python
 from datatypical import DataTypical
 
-dt = DataTypical(
+dt = DataTypical(                  # the defaults
     shapley_mode=False,
-    fast_mode=True,
-    n_archetypes=8,
-    n_prototypes=8,
+    fast_mode=False,
+    nmf_rank=8,                    # number of archetypes
+    n_prototypes=20,
     stereotype_column=None,
     stereotype_target='max',       # 'max', 'min', or numeric value
     selected_significance=None,    # 'archetypal', 'prototypical', 'stereotypical', or None (all)
-    archetypal_method='nmf',
-    shapley_n_permutations=100,
-    shapley_top_n=500,
-    random_state=None,
+    archetypal_method=None,        # None follows fast_mode: 'aa' or 'nmf'
+    formative_method='exact',      # or 'monte_carlo'
+    explanation_method='exact',    # or 'monte_carlo'
+    shapley_n_permutations=100,    # used only by 'monte_carlo'
+    shapley_top_n=None,
+    random_state=42,
     verbose=False,
-    max_memory_mb=8000
+    max_memory_mb=2048
 )
 ```
 
 ### Main Methods
 
-#### `fit(X, y=None, edges=None)`
-Fit the model to data.
+#### `fit(X, **kwargs)`
+Fit the model to data. The data type is detected from `X` and the keywords.
 
 **Parameters**:
 - `X`: Data to fit
   - `pd.DataFrame`: Tabular data (most common)
   - `List[str]`: Text data (auto-detected)
   - `np.ndarray`: Numeric array
-- `y`: Optional labels (preserved but not used in fitting)
-- `edges`: Optional edge list for graph data `[(source, target), ...]`
+- `edges` (or `edge_index`): edge list for graph data, as `(n_edges, 2)` or `(2, n_edges)`; its presence selects the graph path
+- `text_metadata`: a DataFrame of per-document columns for text data, needed when `stereotype_column` names one of them
+- `vectorizer`: `'tfidf'` (the default) for text data
+
+Columns to carry through to the results without fitting on them, such as
+labels, are named with the constructor's `label_columns`.
 
 **Returns**: `self`
 
-#### `transform(X, edges=None)`
-Transform new data using fitted model.
+#### `transform(X, **kwargs)`
+Transform new data using the fitted model.
 
 **Parameters**:
-- `X`: Data to transform (same format/features as fit)
-- `edges`: Optional edge list for graph data
+- `X`: Data to transform (same format and features as the fit)
+- The same keywords as `fit()`, for example `edges` for graph data
 
 **Returns**: `pd.DataFrame` with rank columns
 
-#### `fit_transform(X, y=None, edges=None)`
-Fit model and transform data in one step.
+#### `fit_transform(X, return_ranks_only=None, **kwargs)`
+Fit the model and transform the same data in one step.
 
-**Parameters**: Same as `fit()` and `transform()`
+**Parameters**: as `fit()`, plus `return_ranks_only=True` to return only the
+rank columns.
 
 **Returns**: `pd.DataFrame` with rank columns
 
@@ -137,31 +173,33 @@ Get sample-level formative attributions.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `shapley_mode` | bool | `False` | Enable Shapley explanations and formative analysis |
-| `fast_mode` | bool | `True` | Trade accuracy for speed (use False for publication) |
+| `fast_mode` | bool | `False` | True for exploration: NMF archetypes, no formative values |
 | `stereotype_column` | str | `None` | Column name for stereotypical target (required for stereotypical analysis) |
 
 ### Significance Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `n_archetypes` | int | `8` | Number of archetypal "corners" to find |
-| `n_prototypes` | int | `8` | Number of prototypical representatives |
-| `archetypal_method` | str | `'nmf'` | Method for archetypal analysis: 'nmf' (fast) or 'aa' (accurate) |
+| `nmf_rank` | int | `8` | Number of archetypal "corners" to find |
+| `n_prototypes` | int | `20` | Number of prototypical representatives |
+| `archetypal_method` | str | `None` | `'aa'` (PCHA, raises if unavailable), `'auto'` (cascade with warnings), `'nmf'`, or `None` to follow `fast_mode` |
 
 ### Shapley Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `shapley_n_permutations` | int | `100` | Number of permutations for Shapley (30 in fast_mode) |
-| `shapley_top_n` | int/float | `500` | Limit explanations to top N samples (int) or fraction (float) |
+| `formative_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` permutation sampling |
+| `explanation_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` permutation sampling |
+| `shapley_n_permutations` | int | `100` | Permutations for `'monte_carlo'` (30 in fast_mode) |
+| `shapley_top_n` | int/float | `None` | Limit explanations to top N samples (int) or fraction (float) |
 
 ### System Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `random_state` | int | `None` | Random seed for reproducibility |
+| `random_state` | int | `42` | Random seed for reproducibility |
 | `verbose` | bool | `False` | Print progress messages |
-| `max_memory_mb` | int | `8000` | Memory limit for distance computations |
+| `max_memory_mb` | int | `2048` | Memory limit for distance computations |
 
 ---
 
@@ -214,10 +252,11 @@ significance_plot(
     label_top=0,                      # Number of top points to label
     quadrant_lines=True,              # Draw quadrant division lines
     quadrant_threshold=(0.5, 0.5),   # (x, y) thresholds for quadrants
-    figsize=(6, 5),                   # Figure size
+    figsize=None,                     # Whole canvas; None builds it around plot_size
     cmap='viridis',                   # Colormap
     title=None,                       # Optional title
-    ax=None                           # Optional existing axes
+    ax=None,                          # Optional existing axes
+    plot_size=None                    # Plot area in inches, default (4.1, 4.0)
 )
 ```
 
@@ -244,11 +283,14 @@ heatmap(
     order='actual',                   # 'actual' or 'formative' (instance ordering)
     top_n=20,                         # Number of samples to display
     top_features=None,                # Optional limit on features
-    figsize=(6, 5),                   # Figure size
-    cmap='viridis',                   # Colormap (use 'RdBu_r' for diverging)
-    center=None,                      # Center value for colormap (use 0 for diverging)
+    figsize=None,                     # Whole canvas; None builds it around plot_size
+    cmap='viridis',                   # Colormap
+    center=None,                      # Optional value to centre the colour scale on
     title=None,                       # Optional title
-    ax=None                           # Optional existing axes
+    ax=None,                          # Optional existing axes
+    plot_size=None,                   # Plot area in inches, default (4.0, 3.9)
+    sample_labels=None,               # Row labels: mapping, Series or function of the index
+    max_label_length=24               # Longer row labels lose their middle
 )
 ```
 
@@ -274,10 +316,13 @@ profile_plot(
     sample_idx,                       # Index of sample to profile
     significance='archetypal',        # 'archetypal', 'prototypical', or 'stereotypical'
     order='local',                    # 'local' or 'global' (feature ordering)
-    figsize=(12, 5),                  # Figure size
+    top_features=None,                # Optional limit on features
+    figsize=None,                     # Whole canvas; None builds it around plot_size
     cmap='viridis',                   # Colormap for bar colors
     title=None,                       # Optional title
-    ax=None                           # Optional existing axes
+    ax=None,                          # Optional existing axes
+    plot_size=None,                   # Plot area in inches, default (8.7, 3.9)
+    max_label_length=24               # Longer feature names lose their middle
 )
 ```
 
@@ -313,6 +358,11 @@ sample_idx = get_top_sample(
 - `None` if column not available
 
 **Handles**: Missing formative data gracefully with informative messages.
+
+All three plots serve tabular, text and graph fits, and share one style:
+viridis throughout (two categories in viridis purple and green), 12-point ticks
+and legends, 14-point axis labels and titles, nothing bold, and frameless
+legends outside the plot. See the Visualization Guide for sizing.
 
 ---
 
@@ -362,31 +412,40 @@ results = dt.fit_transform(node_features, edges=edges)
 
 ## Performance Characteristics
 
-### Speed Benchmarks
+### Speed
 
-| Dataset Size | No Shapley | With Shapley (fast_mode=True) | With Shapley (fast_mode=False) |
-|--------------|------------|-------------------------------|--------------------------------|
-| 100 samples | ~1 sec | ~10 sec | ~20 sec |
-| 1,000 samples | ~5 sec | ~1 min | ~5 min |
-| 10,000 samples | ~30 sec | ~10 min | ~60 min |
+Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, best of two fits after a warm-up:
 
-### Memory Usage
+| Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
+| --- | --- | --- | --- | --- |
+| 1,000 | 0.30 s | 0.13 s | 0.47 s | 0.21 s |
+| 5,000 | 1.65 s | 0.85 s | 5.2 s | 1.0 s |
+| 10,000 | 4.0 s | 3.0 s | 19.6 s | 2.8 s |
 
-| Dataset Size | Without Shapley | With Shapley |
-|--------------|-----------------|--------------|
-| 1,000 × 50 | ~100 MB | ~500 MB |
-| 10,000 × 100 | ~1 GB | ~5 GB |
+"Shapley" is `shapley_mode=True` with a `stereotype_column`, so formative
+values and explanations for all three significance types. With both computed
+by permutation sampling instead (`'monte_carlo'`, 100 permutations, as through
+v0.7.7), the same 1,000-sample Shapley fit took 445 seconds, and 103 with
+`fast_mode`.
 
-**Memory optimization**: Automatic cleanup of intermediate arrays during transform.
+Every Shapley game has a closed form, used by default, so these fits sample
+nothing. The prototypical formative values are the one O(n^2) step.
+
+### Memory
+
+Distance computations are chunked to stay within `max_memory_mb`, and the
+n by n similarity matrix of the prototypical formative game is never formed.
+Intermediate arrays are released during transform.
 
 ### fast_mode Effects
 
 | Operation | fast_mode=True | fast_mode=False |
 |-----------|----------------|-----------------|
-| Archetypal method | NMF | PCHA (convex hull) |
-| Shapley permutations | 30 | 100 |
-| Shapley top_n | 500 | All samples |
-| Speed | ~10× faster | Slower but more accurate |
+| Archetypal method | NMF | PCHA |
+| Formative values | Skipped | Computed (exact) |
+| Explanations | Top half of the samples | All samples |
+| Shapley permutations (`'monte_carlo'` only) | 30 | 100 |
+| Speed | See the table above | |
 
 **Recommendation**: Use `fast_mode=True` for exploration, `fast_mode=False` for publication.
 
@@ -411,7 +470,7 @@ top_prototypes = results.nlargest(10, 'prototypical_rank')
 
 ### Workflow 2: Detailed Analysis
 ```python
-# With Shapley - explanations + formative (minutes)
+# With Shapley - explanations + formative (seconds to minutes)
 dt = DataTypical(shapley_mode=True, fast_mode=False)
 results = dt.fit_transform(data)
 
@@ -426,7 +485,8 @@ profile_plot(dt, top_idx, significance='archetypal')
 
 **Use case**: Understanding mechanisms, publication figures
 
-**Time**: Minutes to hours
+**Time**: Seconds to minutes: about 20 s at 10,000 samples, and under ten
+minutes for the whole CASP example notebook (45,730 rows)
 
 ### Workflow 3: Two-Phase Analysis
 ```python
@@ -462,9 +522,9 @@ results_test = dt.transform(test_data)
 # Compare distributions
 import matplotlib.pyplot as plt
 fig, ax = plt.subplots()
-ax.hist(results_train['archetypal_rank'], alpha=0.5, label='Train')
-ax.hist(results_test['archetypal_rank'], alpha=0.5, label='Test')
-ax.legend()
+ax.hist(results_train['archetypal_rank'], alpha=0.5, label='Train', color='#440154')
+ax.hist(results_test['archetypal_rank'], alpha=0.5, label='Test', color='#32b67a')
+ax.legend(frameon=False)
 ```
 
 **Use case**: Quality control, anomaly detection, model validation
@@ -550,9 +610,9 @@ ax.legend()
 ### For Large Datasets (>10,000 samples)
 ```python
 dt = DataTypical(
-    fast_mode=True,              # Use faster methods
+    fast_mode=True,              # NMF archetypes, no formative values
     shapley_mode=False,          # Skip Shapley initially
-    n_archetypes=6,              # Fewer archetypes
+    nmf_rank=6,                  # Fewer archetypes
     n_prototypes=6,              # Fewer prototypes
     max_memory_mb=16000          # Increase if available
 )
@@ -562,22 +622,22 @@ dt = DataTypical(
 ```python
 dt = DataTypical(
     shapley_mode=True,
-    fast_mode=True,
-    shapley_top_n=500,           # Limit to top 500 samples
-    shapley_n_permutations=30    # Fewer permutations
+    fast_mode=True,              # skips the O(n^2) prototypical formative step
+    shapley_top_n=500            # explain only the top 500 samples
 )
 ```
 
-### For Maximum Accuracy
+### For Publication
 ```python
 dt = DataTypical(
     shapley_mode=True,
     fast_mode=False,
-    archetypal_method='aa',      # Convex hull method
-    shapley_n_permutations=100,  # More permutations
-    shapley_top_n=None           # All samples
+    archetypal_method='aa'       # PCHA archetypes; raises rather than substitute
 )
 ```
+
+The formative values and explanations are exact by default, so there is no
+permutation count to raise.
 
 ---
 
@@ -593,9 +653,12 @@ dt = DataTypical(random_state=42)
 - Prototypical selection
 - Stereotypical ranking
 
+**Exact, so independent of random_state**:
+- Formative values and explanations (the defaults, `'exact'`)
+
 **Stochastic** (affected by random_state):
 - NMF initialization (when fast_mode=True)
-- Shapley permutation order
+- Shapley permutation order, only with `formative_method='monte_carlo'` or `explanation_method='monte_carlo'`
 
 **Note**: Results may vary slightly across different NumPy/SciPy versions due to internal algorithm changes.
 
@@ -638,19 +701,24 @@ dt = DataTypical(random_state=42)
 
 ### Slow performance
 
-**Cause**: Shapley computation for many samples.
+**Cause**: The prototypical formative values (O(n^2)) at large n, or permutation sampling if `'monte_carlo'` was asked for.
 
 **Solution**:
-- Use `fast_mode=True`
+- Use `fast_mode=True`, which skips the formative values
+- Use the exact defaults rather than `'monte_carlo'`
 - Set `shapley_top_n=500`
-- Reduce `shapley_n_permutations=30`
 - Two-phase workflow (fast exploration → detailed subset)
 
 ---
 
 ## Version History
 
-### v0.7 (Current)
+### v0.8.2 (Current)
+
+See [What's New in v0.8.2](#whats-new-in-v082) above, and the CHANGELOG for
+every release.
+
+### v0.7
 
 **Changes**:
 - Simplified visualization API (removed mode confusion)
@@ -666,12 +734,12 @@ dt = DataTypical(random_state=42)
 
 ## Citation
 ```bibtex
-@software{datatypical2025,
+@software{datatypical2026,
   author = {Barnard, Amanda S.},
-  title = {DataTypical: Explainable Instance Significance Discovery},
-  year = {2025},
-  url = {https://github.com/amaxiom/datatypical},
-  version = {0.7}
+  title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
+  year = {2026},
+  url = {https://github.com/amaxiom/DataTypical},
+  version = {0.8.2}
 }
 ```
 
@@ -679,9 +747,9 @@ dt = DataTypical(random_state=42)
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) for full text.
+MIT License. See [LICENSE](../LICENSE) for full text.
 
-Copyright (c) 2025 Amanda S. Barnard
+Copyright (c) 2026 Amanda S. Barnard
 
 ---
 

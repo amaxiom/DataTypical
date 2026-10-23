@@ -1,4 +1,4 @@
-# DataTypical v0.7.7 - Computation Guide
+# DataTypical v0.8.2 - Computation Guide
 
 ## Table of Contents
 
@@ -38,7 +38,21 @@ The key innovation is the Shapley-based dual perspectives introduced in v0.6:
 - **Formative significance**: Samples that CREATE the archetypal/prototypical/stereotypical structure (influence-based)
 - **Explanations**: Feature-level attributions explaining WHY each sample is significant
 
-Version 0.7 introduced `fast_mode` for rapid exploration with 30x speedup versus publication-quality analysis.
+Version 0.8.2 computes the feature-level **explanations** exactly by default
+(`explanation_method='exact'`): all three explanation games have closed forms,
+so explanations no longer depend on the seed and cost O(d) per sample instead
+of O(M d^2) value-function work. It also makes the stereotypical formative game
+measure the same distance as the stereotypical rank, adds a NumPy fallback for
+every compiled kernel, and stops `import datatypical` hanging when Numba cannot
+write its cache. See [Exact Computation](#exact-computation-the-default).
+
+Version 0.8.0 computes the **formative** values exactly by default
+(`formative_method='exact'`), because the sampled ordering did not converge at
+the default permutation count.
+
+Version 0.7 introduced `fast_mode` for rapid exploration: a lighter archetypal
+method (NMF), fewer permutations, explanations for the top half of the samples
+only, and no formative values. Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, with ten features, it makes a Shapley fit 2.2 times faster at 1,000 samples, 5.2 times at 5,000 and 6.9 times at 10,000, mostly by skipping the O(n^2) prototypical formative values.
 
 Version 0.7.7 reformulates the formative-Shapley computation as a streaming pass. The Monte Carlo permutation walk previously re-evaluated each value function from scratch on every coalition prefix, costing O(n) full evaluations per permutation. Because all three formative value functions are decomposable along a growing coalition, the full vector of prefix values is now produced in a single incremental pass that is numerically identical to the per-prefix evaluation. Per-fit complexity drops from O(M·n^2) to O(M·n) for archetypal and stereotypical significance, and from O(M·n^3) to O(M·n^2) for prototypical significance. Rankings are unchanged from v0.7.6; only runtime improves (the formative step at n = 10,000 falls from hours to seconds). See [Shapley Value Computation](#shapley-value-computation).
 
@@ -52,8 +66,8 @@ Version 0.7.2 replaces the ConvexHull-based archetypal formative value function 
 
 ### Declared Dependencies
 
-These are the nine packages in `requirements.txt`, so `pip install datatypical`
-installs all of them.
+These are the eleven packages in `requirements.txt`, so `pip install
+datatypical` installs all of them.
 
 | Package | Version | Purpose |
 |---------|---------|---------|
@@ -66,11 +80,13 @@ installs all of them.
 | `numba` | >= 0.55 | JIT compilation of distance functions |
 | `networkx` | >= 2.6 | Graph topology features |
 | `py_pcha` | >= 0.1 | Principal Convex Hull Analysis |
+| `joblib` | >= 1.0 | Parallel permutation batches |
+| `threadpoolctl` | >= 2.0 | Thread control under `deterministic=True` |
 
-`joblib` and `threadpoolctl` are imported directly, for parallel execution and
-for thread control under `deterministic=True`. They are not in
-`requirements.txt`; they are installed today only because scikit-learn depends
-on them.
+`joblib` and `threadpoolctl` are imported unguarded at module top. Through
+v0.8.1 neither was declared, and installs worked only because scikit-learn
+happens to depend on both. A test now fails if any third-party import is not
+declared.
 
 ### Degradation Without the Guarded Three
 
@@ -79,7 +95,7 @@ still imports when they are missing, with defined consequences:
 
 | Missing | What happens |
 |---------|--------------|
-| `numba` | `jit` becomes a no-op and `prange` becomes `range`. The kernels are explicit nested loops written for a compiler, so they still return the same values but run orders of magnitude slower. There is no vectorized fallback path. |
+| `numba` | A `RuntimeWarning` at import says so, and every compiled kernel is replaced by a vectorised NumPy version of the same arithmetic. Results are unchanged; large fits run slower by a small factor (see [Numba and its NumPy Fallback](#numba-and-its-numpy-fallback)). Through v0.8.1 there was no fallback: the kernels, which are nested loops written for a compiler, ran interpreted, thousands of times slower. |
 | `networkx` | Graph topology features are unavailable. |
 | `py_pcha` | `archetypal_method='aa'` raises. It does **not** substitute another method, because a silent substitution is invisible in the output. |
 
@@ -90,16 +106,16 @@ still imports when they are missing, with defined consequences:
 ### Detection at Runtime
 
 ```python
-# Check availability
-from datatypical import DataTypical
+import datatypical
 
-dt = DataTypical(verbose=True)
-# Output shows which optimizations are available:
-#   NUMBA_AVAILABLE: True/False
-#   PCHA: True/False
+datatypical.__version__            # '0.8.2'
+datatypical.NUMBA_AVAILABLE        # True when the compiled kernels are in use
+datatypical.JIT_CACHE_ENABLED      # True when compiled kernels are cached on disk
+datatypical.PCHA is not None       # True when archetypal_method='aa' can run
 ```
 
-DataTypical automatically uses available accelerators when present, with graceful fallbacks when absent.
+`NUMBA_AVAILABLE` is False when Numba is missing, cannot compile, or is
+switched off with `NUMBA_DISABLE_JIT=1`; the NumPy versions are used then.
 
 ---
 
@@ -518,8 +534,8 @@ This ensures identical results regardless of input ordering.
 After fitting, prototype feature vectors are stored on the model so that `transform()` on new data uses the correct training-time vectors rather than indexing the new data by position:
 
 ```python
-dt.prototype_features_     # (n_prototypes, n_features) — Euclidean-space prototype rows
-dt.prototype_features_l2_  # (n_prototypes, n_features) — L2-normalized prototype rows
+dt.prototype_features_     # (n_prototypes, n_features): Euclidean-space prototype rows
+dt.prototype_features_l2_  # (n_prototypes, n_features): L2-normalized prototype rows
 ```
 
 These are used in `_score_with_fitted` and `_assignments_cosine` during transform.
@@ -563,34 +579,40 @@ knee = np.argmax(diff) + 1
 
 ### Target Types
 
-| Target | Interpretation | Score Computation |
-|--------|----------------|-------------------|
-| `'max'` | Maximize feature | `max(0, value - median)` |
-| `'min'` | Minimize feature | `max(0, median - value)` |
-| `float` | Match specific value | `-|value - target|` |
+The rank is a rescaled distance from a target value `tau` on the one column:
+
+    stereotypical_rank_i = 1 - |y_i - tau| / max_j |y_j - tau|
+
+| Target | Interpretation | `tau` |
+|--------|----------------|-------|
+| `'max'` | Towards the largest value | `max(y)` |
+| `'min'` | Towards the smallest value | `min(y)` |
+| `float` | Match a specific value | the value |
+
+Missing values in the column are ignored when `tau` is found, and their rows
+receive rank 0. The formative game uses the same `tau` and the same distance
+(from v0.8.2; see [Value Functions](#value-functions)).
 
 ### Algorithm
 
 ```python
 def _compute_stereotypical_rank(self, X_scaled, index, stereotype_source):
-    # Case 1: Column-based stereotype
-    if self.stereotype_column is not None and stereotype_source is not None:
-        values = stereotype_source.values
-        
-        if self.stereotype_target == 'max':
-            return values / (values.max() or 1.0)
-        elif self.stereotype_target == 'min':
-            return 1.0 - (values / (values.max() or 1.0))
-        else:
-            target = float(self.stereotype_target)
-            distances = np.abs(values - target)
-            return 1.0 - (distances / (distances.max() or 1.0))
-    
-    # Case 2: Default (feature extremeness)
-    X_arr = np.asarray(X_scaled)
-    s = np.max(np.abs(X_arr - 0.5), axis=1) * 2.0
-    return s / (s.max() or 1.0)
+    if stereotype_source is None:
+        # No stereotype configured: feature extremeness, rescaled to [0, 1]
+        s = np.max(np.abs(X_scaled - 0.5), axis=1) * 2.0
+        return (s - s.min()) / (s.max() - s.min())
+
+    values = _stereotype_values_as_float(stereotype_source, self.stereotype_column)
+    tau = _stereotype_tau(values, self.stereotype_target)   # max, min or the number
+    distances = np.abs(values - tau)
+    rank = 1.0 - distances / np.nanmax(distances)
+    rank[np.isnan(values)] = 0.0
+    return np.clip(rank, 0.0, 1.0)
 ```
+
+The normalisation is guarded by a threshold relative to the column's own
+magnitude (v0.8.1), so a column of very small values ranks exactly as it would
+rescaled.
 
 ### Keyword-Based Stereotypes (Text Mode)
 
@@ -621,9 +643,57 @@ $$\phi_i = \frac{1}{n!} \sum_{\pi \in \Pi} \left[ V(S_i^\pi \cup \{i\}) - V(S_i^
 
 where S_i^π is the set of players before i in permutation π.
 
-### Permutation-Based Approximation
+### Exact Computation (the default)
 
-Exact Shapley computation is O(2^n), so we use permutation sampling:
+Enumerating every coalition is O(2^n). DataTypical does not need to: every
+game it plays has a closed form, verified against exhaustive enumeration to
+machine precision.
+
+| Game | Players | Structure | Closed-form cost | Since |
+|------|---------|-----------|------------------|-------|
+| Archetypal formative | samples | mean of per-archetype minimum games | O(n log n) per archetype | 0.8.0 |
+| Prototypical formative | samples | mean of maxima, decomposed into indicator games | O(n^2 log n) | 0.8.0 |
+| Stereotypical formative | samples | constant minus a mean game | O(n) | 0.8.0 |
+| Archetypal explanation | features | mean game | O(d) per sample | 0.8.2 |
+| Prototypical explanation | features | variance game | O(d) per sample | 0.8.2 |
+| Stereotypical explanation | features | scaled mean game | O(d) per sample | 0.8.2 |
+
+The mean game `v(S) = (1/|S|) sum over S of c_i` has
+
+    phi_i = (1/n) * [ c_i + (c_i - mbar_i) * (H_n - 1) ]
+
+with `mbar_i` the mean of `c` over the other players and `H_n` the nth harmonic
+number. The archetypal explanation is that game on
+`c_f = 1 - 2 min(x_f, 1 - x_f)`, and the stereotypical one is that game on
+`|x_f|`, scaled by the sample's stereotypical weight.
+
+The prototypical explanation plays the population variance of the sample's
+values over the coalition. Writing it as
+
+    v(F) = (1/|F|) sum_F x_f^2 - (1/|F|^2) sum_F x_f^2 - (2/|F|^2) sum over pairs in F of x_f x_g
+
+the first term is a mean game and the other two are weighted sums of games
+`1[A subset of F] g(|F|)` with `|A| = 1` and `|A| = 2`, whose Shapley values
+depend only on whether a feature is in `A`. Four coefficients that depend on
+`d` alone then give every feature's value in O(1), and the values sum exactly to
+the variance.
+
+The functions are public: `exact_formative_archetypal`,
+`exact_formative_prototypical`, `exact_formative_stereotypical`,
+`exact_explanations_archetypal`, `exact_explanations_prototypical` and
+`exact_explanations_stereotypical`.
+
+**Why exact is the default.** On a 100-document corpus with 1,277 terms the
+sampled explanations took about 25 minutes per significance type at 100
+permutations; the closed forms take well under a second. The sampled
+formative ordering did not converge at 100 permutations: two seeds gave
+archetypal rankings correlating 0.02.
+
+### Permutation Sampling (opt-in)
+
+`formative_method='monte_carlo'` and `explanation_method='monte_carlo'`
+reproduce results from before v0.8.0 and v0.8.2 respectively. They estimate the
+same games by permutation sampling:
 
 ```python
 for perm in permutations:
@@ -648,7 +718,12 @@ All three formative value functions are decomposable along a growing coalition, 
 | Stereotypical | Running cumulative mean of a per-sample scalar term | O(n) |
 | Prototypical | Running best similarity per coalition member plus a running sum | O(n^2 · d) |
 
-Overall per-fit complexity therefore falls from O(M·n^2) to O(M·n) for archetypal and stereotypical significance, and from O(M·n^3) to O(M·n^2) for prototypical significance, where M is the number of permutations. The streaming kernels are Numba-compiled, with the original per-prefix path retained as a fallback for any other value function.
+Overall per-fit complexity therefore falls from O(M·n^2) to O(M·n) for archetypal and stereotypical significance, and from O(M·n^3) to O(M·n^2) for prototypical significance, where M is the number of permutations. The streaming kernels are Numba-compiled, each with a NumPy twin used when Numba is not, and the original per-prefix path is retained for any other value function.
+
+With `verbose=True` the sampler states its cost before it starts: the number of
+coalition values it will compute (samples times permutations for the formative
+games, samples times permutations times features for the explanations) and
+whether early stopping can end it sooner.
 
 ### Value Functions
 
@@ -695,20 +770,22 @@ def formative_prototypical_coverage(X_subset, indices, context):
 
 **Stereotypical Formative Value Function**:
 
-Measures contribution toward target.
+How much closer to the target the coalition sits, on average, than the median
+does, with `tau` resolved exactly as the stereotypical rank resolves it:
 
 ```python
 def formative_stereotypical_extremeness(X_subset, indices, context):
-    subset_vals = context['target_values'][indices]
-    
-    if context['target'] == 'max':
-        return np.mean(np.maximum(subset_vals - median, 0))
-    elif context['target'] == 'min':
-        return np.mean(np.maximum(median - subset_vals, 0))
-    else:
-        target_val = float(context['target'])
-        return median_dist - np.mean(np.abs(subset_vals - target_val))
+    target_values = context['target_values']
+    tau = _stereotype_tau(target_values, context['target'])   # max, min or the number
+    subset_vals = target_values[indices]
+    return abs(median - tau) - np.mean(np.abs(subset_vals - tau))
 ```
+
+Changed in v0.8.2 for `'max'` and `'min'`, which used to score
+`max(0, y - median)`: every instance on the far side of the median then tied at
+zero, so the formative ranking was coarser than the rank it sits beside in the
+stereotypical plot. Numeric targets are unchanged. Either way the ranking is a
+monotone transform of the column, as `exact_formative_stereotypical` shows.
 
 ### Early Stopping
 
@@ -733,8 +810,18 @@ class ShapleyEarlyStopping:
 
 **Parameters**:
 
-- `shapley_early_stopping_patience`: Consecutive stable iterations (default: 10)
+- `shapley_early_stopping_patience`: Consecutive stable batches (default: 10)
 - `shapley_early_stopping_tolerance`: Relative change threshold (default: 0.01)
+
+**When it can fire.** Permutations are drawn in batches of 10 and the check
+runs between batches. It records nothing before 20 permutations, needs
+`patience` consecutive stable batches after that, and a stop is honoured only
+from 50 permutations, so the earliest possible stop is
+`max(50, 20 + 10 * patience)` permutations: **120 at the default patience**.
+At the default `shapley_n_permutations=100` early stopping therefore never
+fires, and every run uses all 100 permutations. `ShapleySignificanceEngine.
+earliest_early_stop()` returns the number, and `verbose=True` says when it is
+out of reach. This applies only to the opt-in sampled paths.
 
 ### Subsampling (fast_mode)
 
@@ -756,7 +843,8 @@ if shapley_top_n is not None:
 
 ### JIT-Compiled Helpers
 
-Performance-critical loops use Numba JIT compilation:
+Performance-critical loops use Numba JIT compilation. Each of the eight kernels
+has a NumPy twin, selected when `NUMBA_AVAILABLE` is False:
 
 ```python
 @jit(nopython=True, cache=True, fastmath=True)
@@ -974,11 +1062,76 @@ Used in:
 | `shapley_top_n` | 0.5 (50%) | None (all) |
 | `shapley_compute_formative` | False | True |
 
-**Speedup**: Approximately 30x faster than publication mode.
+Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, best of two fits:
 
-### Numba JIT Acceleration
+| Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
+| --- | --- | --- | --- | --- |
+| 1,000 | 0.30 s | 0.13 s | 0.47 s | 0.21 s |
+| 5,000 | 1.65 s | 0.85 s | 5.2 s | 1.0 s |
+| 10,000 | 4.0 s | 3.0 s | 19.6 s | 2.8 s |
 
-JIT-compiled functions provide 2-5x speedup:
+"Shapley" is `shapley_mode=True` with a `stereotype_column`, so formative
+values and explanations for all three significance types. With both computed
+by permutation sampling instead (`'monte_carlo'`, 100 permutations, as through
+v0.7.7), the same 1,000-sample Shapley fit took 445 seconds, and 103 with
+`fast_mode`.
+
+So `fast_mode` makes a Shapley fit 2.2 times faster at 1,000 samples, 5.2 times
+at 5,000 and 6.9 times at 10,000, mostly by skipping the O(n^2) prototypical
+formative values. Without Shapley it is 1.4 to 2.3 times faster, from NMF in
+place of PCHA. Earlier versions of this guide quoted 30 times, and the test
+guide 6 to 10 times, with no machine, size or date; those figures described the
+sampled computation and are withdrawn.
+
+### Numba and its NumPy Fallback
+
+The distance and coalition kernels are explicit loops compiled by Numba. Every
+one has a vectorised NumPy twin computing the same arithmetic, and
+`datatypical.NUMBA_AVAILABLE` selects between them: it is True only when the
+compiled kernels are in use, so it is also False under `NUMBA_DISABLE_JIT=1`. A
+Numba that is missing or cannot compile is reported once, at import, with a
+`RuntimeWarning` naming the cause.
+
+Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten dimensions, best of five calls:
+
+| n x n points | compiled | NumPy fallback | interpreted (v0.8.1) |
+| --- | --- | --- | --- |
+| 200 | 0.06 ms | 0.09 ms | 62 ms |
+| 500 | 0.07 ms | 0.77 ms | 390 ms |
+| 1,000 | 0.21 ms | 3.4 ms | 1,549 ms |
+| 2,000 | 0.55 ms | 13.8 ms | not run |
+
+That is the minimum-distance kernel; the cosine kernel is 1.6 to 4 times slower
+as NumPy than compiled, and 840 to 1,980 times slower interpreted. Through
+v0.8.1 there was no NumPy path, so a missing Numba meant the interpreted column.
+
+At the level of a whole fit the difference all but disappears, because the
+kernels are a small part of the work:
+
+| Fit (`shapley_mode=True`) | compiled | NumPy fallback |
+| --- | --- | --- |
+| 1,000 samples | 0.47 s | 0.44 s |
+| 5,000 samples | 5.24 s | 5.45 s |
+| 10,000 samples | 19.6 s | 20.0 s |
+| 1,000 samples, sampled (`'monte_carlo'`) | 445 s | 444 s |
+
+Across every configuration timed, the fallback was never more than 4 per cent
+slower, and sometimes faster. Earlier versions of this guide said "2 to 5
+times" and the module docstrings "2 to 3 times", with nothing to say where
+either came from.
+
+**On-disk cache.** Compiled kernels are cached so that later sessions skip
+compilation. Numba caches in the folder named by `NUMBA_CACHE_DIR` when it is
+set, and otherwise in `__pycache__` beside the installed module. Through v0.8.1
+an install in a folder the user cannot write to, such as a system-wide Anaconda
+`site-packages` on Windows, made `import datatypical` hang indefinitely: Numba
+tests the folder with `tempfile`, which on Windows retries a refused creation up
+to 2**31 - 1 times when the folder reports itself writable. DataTypical now
+tests the folder with one real write first and turns caching off where it
+fails; the kernels then compile once per session, about a second and a half.
+Set `NUMBA_CACHE_DIR` to a writable folder to keep a cache for such an install.
+
+An example kernel:
 
 ```python
 @jit(nopython=True, parallel=True, cache=True, fastmath=True)
@@ -999,7 +1152,7 @@ def _euclidean_min_jit(X, Y):
 **Flags**:
 - `nopython=True`: Pure machine code, no Python fallback
 - `parallel=True`: Enable `prange` parallelization
-- `cache=True`: Cache compiled function between runs
+- `cache=True`: Cache compiled function between runs, where the cache folder accepts writes
 - `fastmath=True`: Allow floating-point optimizations
 
 ### Recommended Workflows
@@ -1046,10 +1199,12 @@ dt = DataTypical(
 | NMF | O(n × d × k × iter) | O(n × k + k × d) |
 | PCHA | O(n × d × k × iter) | O(n × k + k × d) |
 | Prototype selection | O(k × n²) | O(n²) |
-| Shapley (formative) | O(perm × n² × V) | O(n × d) |
-| Shapley (explanations) | O(n × perm × d × V) | O(n × d) |
+| Shapley formative, exact (default) | O(k × n log n) archetypal, O(n² log n) prototypical, O(n) stereotypical | O(n × d) |
+| Shapley explanations, exact (default) | O(n × d) | O(n × d) |
+| Shapley formative, sampled | O(perm × n × V) after the v0.7.7 streaming | O(n × d) |
+| Shapley explanations, sampled | O(n × perm × d × V) | O(n × d) |
 
-where V is value function cost.
+where V is the cost of one incremental value-function update.
 
 ---
 
@@ -1096,6 +1251,8 @@ where V is value function cost.
 | `shapley_early_stopping_patience` | int | 10 | Convergence patience |
 | `shapley_early_stopping_tolerance` | float | 0.01 | Convergence threshold |
 | `shapley_compute_formative` | bool | None | Compute formative instances |
+| `formative_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` sampling (v0.8.0) |
+| `explanation_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` sampling (v0.8.2) |
 
 ### Significance Selection (v0.7.6)
 
@@ -1108,7 +1265,7 @@ where V is value function cost.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `fast_mode` | bool | False | Enable exploration mode |
-| `archetypal_method` | str | None | 'nmf' or 'aa' (None = auto) |
+| `archetypal_method` | str | None | `'aa'` (PCHA, required), `'auto'` (cascade with warnings), `'nmf'`, or None to follow `fast_mode` |
 | `speed_mode` | bool | False | Relax determinism for speed |
 
 ### Data Type Configuration
@@ -1148,6 +1305,7 @@ where V is value function cost.
 | Percentile normalization | 95th | Robust distance scaling |
 | Minimum permutations | 20 | Before early stopping check |
 | Early stop minimum | 50 | Ensure adequate sampling |
+| Earliest early stop | `max(50, 20 + 10 * patience)` | 120 at the default patience, above the default 100 permutations |
 
 ### Memory Thresholds
 
@@ -1174,9 +1332,19 @@ Solution: Ensure n >= 20 samples.
 Cause: High variance in value function or insufficient permutations.
 
 Solutions:
-- Increase `shapley_n_permutations` (try 200)
-- Increase `shapley_early_stopping_tolerance` (try 0.05)
+- Use the defaults, `formative_method='exact'` and `explanation_method='exact'`,
+  which do not sample at all
+- On the sampled paths, increase `shapley_n_permutations` and watch
+  `split_half_rho` in `shapley_info_` rise with it
 - Check for NaN values in data
+
+**Issue: "import datatypical never returns"**
+
+Cause: an install in a folder the user cannot write to, with DataTypical 0.8.1
+or earlier; Numba's cache check retries indefinitely there.
+
+Solution: upgrade to 0.8.2, or set `NUMBA_CACHE_DIR` to a writable folder
+before importing.
 
 **Issue: "NMF not converging"**
 

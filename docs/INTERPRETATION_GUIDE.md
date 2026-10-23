@@ -1,4 +1,4 @@
-# DataTypical v0.7.7 - Interpretation Guide
+# DataTypical v0.8.2 - Interpretation Guide
 
 ## Table of Contents
 
@@ -180,9 +180,9 @@ DataTypical supports three target specifications:
 
 | Target | Interpretation | Score Computation |
 |--------|----------------|-------------------|
-| `'max'` | Maximize the feature | Distance above median |
-| `'min'` | Minimize the feature | Distance below median |
-| `float` | Match specific value | Negative absolute distance |
+| `'max'` | Maximize the feature | Closeness to the column maximum |
+| `'min'` | Minimize the feature | Closeness to the column minimum |
+| `float` | Match specific value | Closeness to that value |
 
 **What High Stereotypical Rank Means**:
 
@@ -270,12 +270,15 @@ where:
 
 This ensures archetypes lie within the convex hull of the data.
 
-**Method Selection in v0.7**:
+**Method Selection** (`archetypal_method`):
 
-| Mode | Method | Fallback Chain |
-|------|--------|----------------|
-| `fast_mode=True` | NMF | None (NMF only) |
-| `fast_mode=False` | PCHA | ConvexHull (if n_features <= 20) then NMF |
+| Setting | Method | If it fails |
+|---------|--------|-------------|
+| `'aa'` (the default when `fast_mode=False`) | PCHA | Raises `ConfigError`; never substitutes another method |
+| `'auto'` | PCHA | ConvexHull (if n_features <= 20), then NMF, warning at each step |
+| `'nmf'` (the default when `fast_mode=True`) | NMF | Not applicable |
+
+The backend that actually ran is recorded in `archetypal_backend_`.
 
 ### Prototypical Selection via Facility Location
 
@@ -322,24 +325,23 @@ s(i, j) = (x_i dot x_j) / (||x_i|| * ||x_j||)
 
 **Distance-Based Targeting**:
 
-For a target column with values v and specified target t:
+For a target column with values v, the value ranked towards is
 
-**Maximize** (`stereotype_target='max'`):
 ```
-score_i = max(0, v_i - median(v))
-```
-
-**Minimize** (`stereotype_target='min'`):
-```
-score_i = max(0, median(v) - v_i)
+tau = max(v)   for stereotype_target='max'
+tau = min(v)   for stereotype_target='min'
+tau = t        for a numeric stereotype_target=t
 ```
 
-**Match Value** (`stereotype_target=float`):
+and every sample is scored by its distance from it, rescaled to [0, 1]:
+
 ```
-score_i = -|v_i - t|
+score_i = 1 - |v_i - tau| / max_j |v_j - tau|
 ```
 
-All scores are normalized to [0, 1] range.
+So the sample at the target scores 1 and the one furthest from it scores 0.
+The score depends on the stereotype column alone, which is why evaluating it
+against an outcome stored in that same column is circular.
 
 ---
 
@@ -376,9 +378,33 @@ Shapley values are the unique allocation satisfying:
 
 4. **Linearity**: Attributions add across games
 
+### Exact Computation (the default)
+
+Computing a Shapley value from its definition needs O(2^n) value function
+evaluations. DataTypical never does that. Every game it plays has a closed form,
+used by default since v0.8.0 for the formative values (`formative_method='exact'`)
+and since v0.8.2 for the explanations (`explanation_method='exact'`).
+
+The explanation games are played over the features of one sample, and each is
+a mean game or a variance game over those features. For a mean game
+v(F) = mean over F of c_f, over d players,
+
+```
+phi_f = (1/d) * [ c_f + (c_f - mbar_f) * (H_d - 1) ]
+```
+
+with `mbar_f` the mean of c over the other features and `H_d` the dth harmonic
+number. The variance game splits into single and pair indicator games, each of
+which has a closed form too. The results are exact, satisfy efficiency to
+machine precision, cost O(d) per sample, and do not depend on `random_state`.
+Each one is verified in the test suite against exhaustive enumeration of every
+coalition.
+
 ### Permutation-Based Approximation
 
-Exact Shapley computation requires O(2^n) value function evaluations. DataTypical uses permutation sampling for efficient approximation:
+With `formative_method='monte_carlo'` or `explanation_method='monte_carlo'`,
+DataTypical estimates the same values by permutation sampling instead, which
+reproduces results from earlier versions:
 
 ```
 For each permutation pi:
@@ -391,7 +417,7 @@ phi[f] = marginal[f] / n_permutations
 
 **Convergence**: By the Central Limit Theorem, approximation error decreases as O(1/sqrt(M)) where M is the number of permutations.
 
-**Early Stopping**: DataTypical monitors convergence and can terminate early when Shapley values stabilize (controlled by `shapley_early_stopping_patience` and `shapley_early_stopping_tolerance`).
+**Early Stopping**: DataTypical monitors convergence and can terminate early when Shapley values stabilize (controlled by `shapley_early_stopping_patience` and `shapley_early_stopping_tolerance`). The check runs once per batch of 10 permutations, starts recording at 20, needs `patience` stable batches in a row, and is honoured only from 50, so the earliest possible stop is `max(50, 20 + 10 * patience)` permutations: 120 at the default patience of 10. At the default `shapley_n_permutations=100` every run therefore uses all 100. `ShapleySignificanceEngine.earliest_early_stop()` returns the figure for any setting, and a verbose fit states it.
 
 ### Value Functions for Explanations
 
@@ -424,17 +450,22 @@ def explain_prototypical_features(X_subset, indices, context):
 
 **Stereotypical Explanations**:
 
-Measures how much each feature contributes to matching the target:
+Measures how much each feature contributes to matching the target. The
+sample's weight w is its excess over the column median in the target direction
+(clipped at zero) for `'max'` and `'min'`, or minus its distance from a numeric
+target:
 
 ```python
 def explain_stereotypical_features(X_subset, indices, context):
-    target_value = context['target_values'][sample_idx]
-    distance = compute_target_distance(target_value, context)
-    feature_contrib = np.mean(np.abs(X_subset))
-    return distance * feature_contrib
+    # w: this sample's stereotypical weight, fixed for the whole game
+    return w * np.mean(np.abs(X_subset))
 ```
 
-**Interpretation**: Features that align the sample toward the target contribute positively. Features that pull away contribute negatively.
+**Interpretation**: The game is a mean game scaled by w, so its exact Shapley
+values are w times the mean-game values of |x|. For a sample on the target side
+of the median, features with large |x| contribute most; a sample on the far
+side of the median under `'max'` or `'min'` has weight zero and no
+explanation.
 
 ### Interpreting Shapley Explanations
 
@@ -523,22 +554,23 @@ The plot reveals:
 
 ### Formative Value Functions
 
-**Archetypal Formative (Convex Hull)**:
+**Archetypal Formative (Cached Archetypes)**:
 
-Measures how much each sample expands the convex hull volume:
+Measures how well a coalition reaches the fitted archetypes, the same geometry
+the actual archetypal rank is built on (since v0.7.2; it replaced a convex-hull
+volume that was intractable beyond about 8 features):
 
 ```python
-def formative_archetypal_convex_hull(X_subset, indices, context):
-    if n_features > 20:
-        # Safe fallback for high dimensions
-        ranges = X_subset.max(axis=0) - X_subset.min(axis=0)
-        return np.prod(ranges + 1e-10)
-    else:
-        hull = ConvexHull(X_subset)
-        return hull.volume
+def formative_archetypal_pcha_cached(X_subset, indices, context):
+    archetypes = context['archetypes']          # H_, (n_archetypes, n_features)
+    dists = np.linalg.norm(archetypes[:, None, :] - X_subset[None, :, :], axis=2)
+    return -np.mean(dists.min(axis=1))          # nearer coverage is higher
 ```
 
-**Interpretation**: Samples on the convex hull boundary have high formative values. Samples inside the hull have low formative values.
+**Interpretation**: A sample that is the only one near some archetype has a
+high formative value; one of many near the same archetype has a low one. The
+game is a mean of minimum games, one per archetype, so its exact values cost
+O(n log n) per archetype.
 
 **Prototypical Formative (Coverage)**:
 
@@ -557,21 +589,22 @@ def formative_prototypical_coverage(X_subset, indices, context):
 
 **Stereotypical Formative (Extremeness)**:
 
-Measures how much each sample contributes to the target distribution:
+Measures how much closer to the target the coalition sits, on average, than
+the median does, with `tau` resolved exactly as the actual stereotypical score
+resolves it (the column maximum, minimum or numeric target):
 
 ```python
 def formative_stereotypical_extremeness(X_subset, indices, context):
     subset_vals = context['target_values'][indices]
-    
-    if target == 'max':
-        return np.mean(np.maximum(subset_vals - median, 0))
-    elif target == 'min':
-        return np.mean(np.maximum(median - subset_vals, 0))
-    else:
-        return median_dist - np.mean(np.abs(subset_vals - target))
+    return abs(median - tau) - np.mean(np.abs(subset_vals - tau))
 ```
 
-**Interpretation**: Samples that pull the distribution toward the target have high formative values.
+**Interpretation**: Samples near the target have high formative values. The
+game is a mean game, so the exact values are affine in `|v_i - tau|` and the
+formative ordering is the same as the actual stereotypical ordering: the
+stereotypical formative axis carries no information beyond the stereotype
+column. (Through v0.8.1, `'max'` and `'min'` used the excess over the median
+here, which tied every sample on the far side of it.)
 
 ### The Four-Quadrant Discovery
 
@@ -815,7 +848,8 @@ import seaborn as sns
 
 rank_cols = ['archetypal_rank', 'prototypical_rank', 'stereotypical_rank']
 corr = results[rank_cols].corr()
-sns.heatmap(corr, annot=True, cmap='coolwarm', center=0)
+print(corr.round(2))                          # the numbers, as a table
+sns.heatmap(corr, cmap='viridis', vmin=-1, vmax=1)  # the pattern, with no text over the cells
 ```
 
 **Typical Patterns**:
@@ -1118,12 +1152,13 @@ Samples are assumed independent. Temporal or spatial correlations are not explic
 
 - **Single feature**: Only one target at a time; multi-objective requires multiple runs
 - **Distance metric**: Absolute difference may not suit all targets
-- **Median reference**: Assumes median is meaningful reference point
+- **Median reference**: The formative game and the explanation weights measure against the column median, so that reference should be meaningful
+- **No information beyond the column**: The stereotypical formative ordering is the same as the actual one
 
 **Shapley Values**:
 
-- **Computational cost**: Exponential exact computation requires permutation approximation
-- **Convergence**: May require many permutations; early stopping helps
+- **Computational cost**: Every game has a closed form, used by default; the prototypical formative values are the one O(n^2) step
+- **Convergence**: Only relevant to the opt-in permutation sampling (`'monte_carlo'`), where the ranking can need far more than the default 100 permutations; check `split_half_rho`
 - **Value function design**: Simplified for single samples; may not perfectly reflect computation
 - **Additivity**: Assumes value function properties; non-monotonic functions violate assumptions
 
@@ -1341,5 +1376,5 @@ else:
 
 ---
 
-*DataTypical v0.7 - Interpretation Guide*
+*DataTypical v0.8.2 - Interpretation Guide*
 *For understanding and applying instance significance analysis*

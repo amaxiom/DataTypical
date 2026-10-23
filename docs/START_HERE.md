@@ -192,7 +192,7 @@ print(top_archetypes)
 
 ### Step 3: Understand Why (Moderate Speed)
 ```python
-# With Shapley - get explanations (minutes)
+# With Shapley - get explanations (seconds to minutes)
 dt = DataTypical(shapley_mode=True)
 results = dt.fit_transform(data)
 
@@ -220,21 +220,26 @@ profile_plot(dt, top_idx, significance='archetypal')
 
 ## Performance Expectations
 
-### Without Shapley (Exploration)
-| Dataset Size | Time |
-|--------------|------|
-| 1,000 samples | ~5 seconds |
-| 10,000 samples | ~30 seconds |
-| 100,000 samples | ~5 minutes |
+Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, in seconds:
 
-### With Shapley (Explanation + Discovery)
-| Dataset Size | Time |
-|--------------|------|
-| 100 samples | ~10 seconds |
-| 1,000 samples | ~5 minutes |
-| 10,000 samples | ~60 minutes |
+| Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
+| --- | --- | --- | --- | --- |
+| 1,000 | 0.30 s | 0.13 s | 0.47 s | 0.21 s |
+| 5,000 | 1.65 s | 0.85 s | 5.2 s | 1.0 s |
+| 10,000 | 4.0 s | 3.0 s | 19.6 s | 2.8 s |
 
-**Strategy**: Start fast (no Shapley), then add explanations for interesting subsets.
+"Shapley" is `shapley_mode=True` with a `stereotype_column`, so formative
+values and explanations for all three significance types. With both computed
+by permutation sampling instead (`'monte_carlo'`, 100 permutations, as through
+v0.7.7), the same 1,000-sample Shapley fit took 445 seconds, and 103 with
+`fast_mode`.
+
+Since v0.8.2 every Shapley value is computed exactly by default, so a full
+Shapley fit is no longer the slow path it was. The prototypical formative
+values are the one step that grows as n squared.
+
+**Strategy**: Start fast (no Shapley), then add explanations and formative
+ranks once you know what you are looking at.
 
 ---
 
@@ -351,17 +356,17 @@ A: PCA finds linear components, clustering finds groups. DataTypical finds insta
 **Q: Do I need to choose between archetypal/prototypical/stereotypical?**  
 A: No! You get all three at once. But if you only need one, set `selected_significance='archetypal'` (or `'prototypical'`/`'stereotypical'`) to skip computing the others and save time.
 
-**Q: Why is Shapley mode slower?**  
-A: Shapley values require computing contributions across many sample coalitions. The depth of explanation requires computational work.
+**Q: Why is Shapley mode slower?**
+A: It computes three more things per significance type: a formative value for every sample and an explanation for every feature of every sample. All of them have closed forms, so it is exact and does not sample, but it is still extra work, and the prototypical formative values grow as n squared.
 
 **Q: Can I use this for feature selection?**  
 A: Indirectly yes - Shapley values reveal which features drive significance, but DataTypical is primarily for instance analysis.
 
-**Q: What if my data has missing values?**  
-A: DataTypical requires complete data. Impute missing values before analysis.
+**Q: What if my data has missing values?**
+A: DataTypical fills each missing value with its column's training median, and records the fraction missing per column in `missingness_`. Set `max_missing_frac` to refuse columns that are too sparse. If the median is a poor guess for your data, impute before fitting.
 
-**Q: How do I choose n_archetypes and n_prototypes?**  
-A: Defaults (8 each) work well for most datasets. Increase for more complex structure, decrease for simpler datasets.
+**Q: How do I choose the number of archetypes and prototypes?**
+A: `nmf_rank` sets the number of archetypes (default 8) and `n_prototypes` the number of prototypes (default 20). The defaults work well for most datasets. Increase them for more complex structure, decrease them for simpler datasets, or set `auto_n_prototypes='kneedle'` to choose the prototype count from the coverage curve.
 
 ---
 

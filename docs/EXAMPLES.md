@@ -109,8 +109,6 @@ heatmap(
     significance='stereotypical',
     order='actual',
     top_n=25,
-    cmap='RdBu_r',
-    center=0,
     ax=ax
 )
 ax.figure.savefig('stereotypical_heatmap.png', dpi=300, bbox_inches='tight')
@@ -219,7 +217,7 @@ print(materials.columns)
 dt = DataTypical(
     shapley_mode=True,
     fast_mode=False,
-    n_archetypes=10  # More corners for complex property space
+    nmf_rank=10  # More corners (archetypes) for complex property space
 )
 
 feature_cols = ['sigma', 'kappa', 'S', 'band_gap', 'carrier_conc']
@@ -396,13 +394,13 @@ results_new = dt.transform(X_new)
 fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
 for i, sig in enumerate(['archetypal', 'prototypical', 'stereotypical']):
-    axes[i].hist(results_historical[f'{sig}_rank'], bins=30, alpha=0.5, 
-                 label='Historical', color='blue')
-    axes[i].hist(results_new[f'{sig}_rank'], bins=30, alpha=0.5, 
-                 label='New Batch', color='red')
+    axes[i].hist(results_historical[f'{sig}_rank'], bins=30, alpha=0.5,
+                 label='Historical', color='#440154')   # viridis purple
+    axes[i].hist(results_new[f'{sig}_rank'], bins=30, alpha=0.5,
+                 label='New batch', color='#32b67a')    # viridis green
     axes[i].set_xlabel(f'{sig.capitalize()} Rank')
     axes[i].set_ylabel('Count')
-    axes[i].legend()
+    axes[i].legend(frameon=False)
     axes[i].set_title(f'{sig.capitalize()} Distribution')
 
 plt.tight_layout()
@@ -585,8 +583,6 @@ heatmap(
     significance='stereotypical',
     order='actual',
     top_n=30,
-    cmap='RdBu_r',
-    center=0,
     ax=ax
 )
 ax.figure.savefig('stereotypical_heatmap.png', dpi=300, bbox_inches='tight')
@@ -830,12 +826,12 @@ print(f"  Coverage: {(curated_arch_range/full_arch_range)*100:.1f}%")
 # Compare prototypical distribution
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-axes[0].hist(results['prototypical_rank'], bins=50, alpha=0.7, color='blue')
+axes[0].hist(results['prototypical_rank'], bins=50, alpha=0.7, color='#440154')
 axes[0].set_xlabel('Prototypical Rank')
 axes[0].set_ylabel('Count')
 axes[0].set_title('Full Dataset (50K molecules)')
 
-axes[1].hist(results_curated['prototypical_rank'], bins=30, alpha=0.7, color='green')
+axes[1].hist(results_curated['prototypical_rank'], bins=30, alpha=0.7, color='#32b67a')
 axes[1].set_xlabel('Prototypical Rank')
 axes[1].set_ylabel('Count')
 axes[1].set_title('Curated Set (500 molecules)')

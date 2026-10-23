@@ -1,14 +1,16 @@
 """
-exp2_scaling.py -- DataTypical v0.7.7
-=====================================
-Focused scaling of the formative-Shapley computation, and the v0.7.7 win.
+exp2_scaling.py: DataTypical v0.8.2
+===================================
+Focused scaling of the sampled formative-Shapley computation, and the v0.7.7 win.
+Since v0.8.0 sampling runs only under formative_method='monte_carlo'; the
+default exact closed form samples nothing.
 
 v0.7.7 replaced the per-prefix re-evaluation of each formative value function with
 an exact streaming pass. This script measures the formative step directly (via the
 Shapley engine on cached archetype geometry), comparing the streaming path against
 the original generic path, as a function of:
 
-  (a) dataset size n        (streaming vs generic)   -- the headline speedup
+  (a) dataset size n        (streaming vs generic): the headline speedup
   (b) dimensionality d      (streaming)
   (c) permutations M        (streaming vs generic)
 
@@ -48,7 +50,7 @@ D_DEFAULT, K, M_DEFAULT, SEED = 8, 8, 50, 42
 N_GRID = [500, 1000, 2000, 4000]
 D_GRID = [2, 4, 6, 8, 10, 16]
 M_GRID = [10, 25, 50, 100, 200, 400]
-# Smaller grids for a quick (e.g. notebook) run -- the generic path is slow.
+# Smaller grids for a quick (e.g. notebook) run; the generic path is slow.
 N_GRID_QUICK = [500, 1000, 2000]
 M_GRID_QUICK = [10, 50, 200]
 _ORIG_REGISTRY = dict(dtmod._PREFIX_VALUE_FUNCS)
@@ -143,19 +145,19 @@ def make_figure(df):
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.6), layout="constrained")
     panels = [
         # axis, xlabel, title, show_generic, log_y, log_x
-        ("n", "Dataset size n", "(a) Runtime vs n  (d=%d, M=%d)" % (D_DEFAULT, M_DEFAULT), True, True, True),
-        ("d", "Dimensionality d", "(b) Runtime vs d  (n=1000, M=%d)" % M_DEFAULT, False, False, False),
-        ("M", "Shapley permutations M", "(c) Runtime vs M  (n=1000, d=%d)" % D_DEFAULT, True, True, True),
+        ("n", "Dataset size n", "(a) Runtime vs n (d=%d, M=%d)" % (D_DEFAULT, M_DEFAULT), True, True, True),
+        ("d", "Dimensionality d", "(b) Runtime vs d (n=1000, M=%d)" % M_DEFAULT, False, False, False),
+        ("M", "Shapley permutations M", "(c) Runtime vs M (n=1000, d=%d)" % D_DEFAULT, True, True, True),
     ]
     import matplotlib.ticker as mticker
     for ax, (axis, xlabel, title, show_generic, log_y, log_x) in zip(axes, panels):
         sub = df[df.axis == axis].sort_values("value")
         ax.plot(sub["value"], sub["streaming_s"], color=c_stream, lw=2.0, marker="o",
-                ms=6, markeredgecolor="white", markeredgewidth=0.6, label="streaming (v0.7.7)")
+                ms=6, markeredgecolor="white", markeredgewidth=0.6, label="Streaming (v0.7.7)")
         if show_generic:
             ax.plot(sub["value"], sub["generic_s"], color=c_generic, lw=2.0, ls="--",
                     marker="s", ms=6, markeredgecolor="white", markeredgewidth=0.6,
-                    label="generic (pre-v0.7.7)")
+                    label="Generic (pre-v0.7.7)")
         if log_y:
             ax.set_yscale("log")
         if log_x:
@@ -167,9 +169,8 @@ def make_figure(df):
         xlab = xlabel + (", log scale" if log_x else "")
         fc.style_axes(ax, xlabel=xlab, ylabel=ylab, title=title)
     fc.legend_outside(axes[2])
-    fig.suptitle("DataTypical v0.7.7 formative-Shapley scaling (archetypal value function, single-thread)\n"
-                 "streaming and generic paths produce numerically identical Shapley values",
-                 fontsize=10)
+    fig.suptitle("Formative-Shapley scaling, archetypal value function, single thread: "
+                 "the streaming and generic paths give identical values")
     _emit(fig, "exp2_scaling")
 
 

@@ -1,6 +1,6 @@
 """
-exp1_structural_significance.py -- DataTypical v0.7.7
-=====================================================
+exp1_structural_significance.py: DataTypical v0.8.2
+====================================================
 Test of the central claim: ARE formative instances structurally significant?
 
 Design (see common.py for the rationale):
@@ -9,7 +9,7 @@ Design (see common.py for the rationale):
         formative_proto  (DataTypical prototypical formative-Shapley)
         coreset          (facility-location coverage)
         random           (null baseline)
-  * Reference scorers (MODEL/LABEL dependent -- different objective, reported
+  * Reference scorers (MODEL/LABEL dependent, a different objective, reported
     in a separate panel, never mixed into the like-for-like comparison):
         isolation_forest, influence, knn_shapley
   * Model-free metrics:
@@ -23,7 +23,7 @@ Design (see common.py for the rationale):
     corner points are resolved rather than diluted at large n.
   * Primary dataset is SYNTHETIC with KNOWN structure-defining points AND known
     redundant distractor-outlier clusters, so recovery is validated against ground
-    truth (AUROC vs corners) and against distraction (AUROC vs distractors --
+    truth (AUROC vs corners) and against distraction (AUROC vs distractors:
     anomaly detectors rank the distractors high, a per-instance structural score
     should not). Real UCI sets are included as a (saturated) reality check.
 
@@ -173,11 +173,8 @@ def fig_signal(df_res, dataset, metric, scorers, fname, title):
     ax.invert_yaxis()  # first scorer at top
     fc.style_axes(
         ax,
-        xlabel=("Structural-significance signal\n"
-                "= AUC(remove most-significant first) - AUC(remove least-significant first)\n"
-                "positive: removing the most-significant first degrades structure more"),
+        xlabel="Signal: AUC removing most significant first, minus least first",
         title=title)
-    ax.xaxis.label.set_fontsize(9)
     _emit(fig, fname)
 
 
@@ -206,8 +203,7 @@ def fig_curves(curve_store, dataset, scorers, fname):
         fc.style_axes(ax, xlabel="Fraction removed (%), log scale",
                       ylabel="Structural retention", title=mtitle)
     fc.legend_outside(axes[1], ncol=1)
-    fig.suptitle(f"{dataset}: structural degradation under pruning (mean +/- std over seeds)",
-                 fontsize=11)
+    fig.suptitle(f"{dataset}: structural degradation under pruning (mean +/- std over seeds)")
     _emit(fig, fname)
 
 
@@ -217,23 +213,22 @@ def fig_recovery(df_rec, fname):
     order = [s for s in ["formative_arch", "formative_proto", "coreset",
                          "isolation_forest", "influence", "knn_shapley"] if s in gs.index]
     gs, gd = gs.reindex(order), gd.reindex(order)
-    c_struct, c_distr = fc.viridis_colors(2, lo=0.15, hi=0.75)
+    c_struct, c_distr = fc.viridis_colors(2)
     fig, ax = plt.subplots(figsize=(9.0, 5.2), layout="constrained")
     y = np.arange(len(order))
     h = 0.38
     ax.barh(y - h / 2, gs["mean"], height=h, xerr=gs["std"], color=c_struct,
             edgecolor="white", linewidth=0.6, capsize=3, zorder=3,
-            label="structure-defining corners\n(load-bearing: want HIGH)")
+            label="Structure-defining corners\n(load-bearing: want high)")
     ax.barh(y + h / 2, gd["mean"], height=h, xerr=gd["std"], color=c_distr,
             edgecolor="white", linewidth=0.6, capsize=3, zorder=3,
-            label="redundant distractor outliers\n(anomalous, expendable: want LOW)")
-    ax.axvline(0.5, color="0.4", lw=0.8, ls="--", zorder=2, label="chance (0.5)")
+            label="Redundant distractor outliers\n(anomalous, expendable: want low)")
+    ax.axvline(0.5, color="0.4", lw=0.8, ls="--", zorder=2, label="Chance (0.5)")
     ax.set_yticks(y); ax.set_yticklabels([PRETTY[s] for s in order])
     ax.invert_yaxis()
     ax.set_xlim(0, 1)
     fc.style_axes(ax, xlabel="AUROC vs ground-truth instance class",
-                  title="Structure vs distraction: does a high score mean load-bearing,\n"
-                        "or merely anomalous? (synthetic, mean +/- std over seeds)")
+                  title="Structure vs distraction (synthetic, mean +/- std over seeds)")
     fc.legend_outside(ax)
     _emit(fig, fname)
 
@@ -261,9 +256,9 @@ def run(n=1000, seeds=(0, 1, 2, 3, 4), n_features=8, real=False,
 
     fig_recovery(rec, "exp1_recovery")
     fig_signal(res, "Synthetic", "knn", LIKE_FOR_LIKE, "exp1_synthetic_signal",
-               "Synthetic: structural-significance signal (kNN fidelity)\nmodel-free, like-for-like comparison")
+               "Synthetic, like-for-like: signal under kNN fidelity")
     fig_signal(res, "Synthetic", "knn", REFERENCE, "exp1_reference_signal",
-               "Reference methods (model/label dependent) - different objective")
+               "Reference methods (model or label dependent): signal under kNN fidelity")
     fig_curves(curves, "Synthetic", LIKE_FOR_LIKE, "exp1_synthetic_curves")
 
     # ---- real datasets (optional reality check) ----
