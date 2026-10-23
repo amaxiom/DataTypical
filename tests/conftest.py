@@ -6,9 +6,32 @@ handful of features, because the expensive paths (Shapley permutations,
 formative walks) are exercised by a few targeted tests rather than by every
 test in the file.
 """
+import os
 import sys
 import warnings
 from pathlib import Path
+
+
+def _coverage_is_measuring() -> bool:
+    if any(arg.startswith("--cov") for arg in sys.argv):
+        return True
+    try:
+        import coverage
+    except ImportError:
+        return False
+    return coverage.Coverage.current() is not None
+
+
+# The coverage convention, made mechanical (v0.8.2). The compiled kernels run
+# as machine code, which the line tracer cannot see, so the same suite reports
+# about six points less with the JIT on than off, and the figure depended on
+# the machine that measured it. Whenever coverage is measuring, the JIT is
+# turned off before anything imports numba, so the published figure is always
+# the JIT-off one. An explicit NUMBA_DISABLE_JIT in the environment wins.
+if _coverage_is_measuring() and "NUMBA_DISABLE_JIT" not in os.environ:
+    os.environ["NUMBA_DISABLE_JIT"] = "1"
+    if "numba" in sys.modules:
+        sys.modules["numba"].config.reload_config()
 
 import numpy as np
 import pandas as pd

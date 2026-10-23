@@ -478,7 +478,8 @@ def test_fit_transform_signals(df_small):
 # ---------------------------------------------------------------------------
 class TestConfig:
     def test_to_config_carries_the_version(self):
-        assert DataTypical().to_config()["version"] == "0.8.1"
+        import datatypical
+        assert DataTypical().to_config()["version"] == datatypical.__version__
 
     def test_round_trip(self):
         dt = DataTypical(nmf_rank=5, n_prototypes=7, stereotype_column="Age")
@@ -624,51 +625,6 @@ class TestShapleyEndToEnd:
         )
         out = dt.fit_transform(df_small)
         assert "%s_rank" % which in out.columns
-
-    def test_v04_value_functions(self, fitted_shapley):
-        dt, _ = fitted_shapley
-        X = np.random.default_rng(0).random((6, 4))
-        ctx = {"nmf_rank": 2, "random_state": 0}
-        assert np.isfinite(dt._v04_archetypal_value(X, np.arange(6), ctx))
-        assert np.isfinite(dt._v04_prototypical_value(X, np.arange(6), ctx))
-        stereo_ctx = {
-            "target_values": np.arange(6.0),
-            "stereotype_target": "max",
-            "median": 2.5,
-        }
-        assert np.isfinite(dt._v04_stereotypical_value(X, np.arange(6), stereo_ctx))
-
-    @pytest.mark.parametrize("target", ["max", "min", 3.0])
-    def test_v04_stereotypical_targets(self, fitted_shapley, target):
-        dt, _ = fitted_shapley
-        X = np.random.default_rng(0).random((6, 4))
-        ctx = {
-            "target_values": np.arange(6.0),
-            "stereotype_target": target,
-            "median": 2.5,
-        }
-        assert np.isfinite(dt._v04_stereotypical_value(X, np.arange(6), ctx))
-
-    def test_v04_stereotypical_without_target_values(self, fitted_shapley):
-        dt, _ = fitted_shapley
-        X = np.random.default_rng(0).random((6, 4))
-        value = dt._v04_stereotypical_value(X, np.arange(6), {"target_values": None})
-        assert np.isfinite(value)
-
-    def test_v04_archetypal_falls_back_when_nmf_fails(self, fitted_shapley):
-        """The except branch returns a range-based value instead of raising."""
-        dt, _ = fitted_shapley
-        X = np.random.default_rng(0).random((6, 4))
-        ctx = {"nmf_rank": 2, "random_state": "not-a-seed"}
-        assert np.isfinite(dt._v04_archetypal_value(X, np.arange(6), ctx))
-
-    def test_v04_value_functions_on_empty_subsets(self, fitted_shapley):
-        dt, _ = fitted_shapley
-        empty = np.empty((0, 4))
-        idx = np.array([], dtype=int)
-        ctx = {"nmf_rank": 2, "random_state": 0}
-        assert dt._v04_archetypal_value(empty, idx, ctx) == 0.0
-        assert dt._v04_prototypical_value(empty, idx, ctx) == 0.0
 
     def test_shapley_on_transform(self, fitted_shapley, df_small):
         dt, _ = fitted_shapley

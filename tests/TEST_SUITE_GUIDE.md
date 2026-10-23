@@ -2,18 +2,19 @@
 
 ## Overview
 
-This document provides comprehensive documentation for the DataTypical v0.7 test suite, which validates all functionality across five specialized test modules covering unit testing, data modality detection, performance scaling, visualization, and end-to-end benchmarking.
+This document describes the DataTypical v0.8.2 tests: the pytest suite, which is the release gate, and the five older script suites covering unit testing, data modality detection, performance scaling, visualization, and end-to-end benchmarking.
 
-**Total Coverage:** 62 tests across 5 test suites  
-**Execution Time:** 3-5 minutes (all suites)  
+**Script suites:** 62 tests across 5 suites, 3-5 minutes in all  
+**pytest suite:** see the next section  
 **Reproducibility:** 100% deterministic with random_state=42
 
 ---
 
 ## The pytest suite (added in v0.8.0)
 
-This is the layer to run routinely, and it is the release gate: 444 tests,
-99.5% statement coverage, a few minutes end to end.
+This is the layer to run routinely, and it is the release gate: 914 tests,
+100% statement coverage of both modules (measured as described under
+[Coverage](#coverage)), about two minutes end to end.
 
 ```bash
 python -m pytest -q
@@ -26,7 +27,14 @@ separately, as described further down.
 
 | module | what it covers |
 | --- | --- |
+| `test_v082.py` | everything new or fixed in v0.8.2: the Numba guard and NumPy fallback, the cache probe, exact explanations against enumeration, the stereotypical halves agreeing, early stopping, and the visualisations on every fit type, at every size, in the house style |
+| `test_v081_defects.py` | regression tests for the v0.8.1 fixes |
 | `test_defects_v080.py` | regression tests for every defect fixed in v0.8.0, each reproducing the original failure |
+| `test_exact_formative.py`, `test_exact_prototypical.py` | the exact formative values against exhaustive enumeration |
+| `test_shapley_convergence.py` | the split-half diagnostic and the sampled estimates |
+| `test_score_formulas.py`, `test_scale_robustness.py` | the published rank formulas, and invariance to scale and offset |
+| `test_refit_state.py`, `test_transform_and_config.py` | state between fits, `transform()` and configuration round trips |
+| `test_dead_parameters.py`, `test_graph_edges.py`, `test_knee_and_nan_ranks.py` | parameter validation, graph inputs, the knee and NaN ranks |
 | `test_internals.py` | numeric helpers, distance kernels, facility location, the Shapley engine, value functions |
 | `test_api.py` | the public API across tabular, text and graph data, config round-tripping, error paths |
 | `test_viz.py` | `datatypical_viz`, under the Agg backend |
@@ -41,19 +49,23 @@ separately, as described further down.
 
 Measure broadly and filter at report time. Narrowing coverage to a single module
 on this machine corrupts numpy sentinels and makes passing tests fail, so do not
-replace this with `--cov=datatypical.py`. Disabling the numba JIT lets coverage
-trace the compiled kernels.
+replace this with `--cov=datatypical.py`.
 
 ```bash
-NUMBA_DISABLE_JIT=1 python -m coverage run -m pytest -q
+python -m coverage run -m pytest -q
 python -m coverage report
 ```
 
-`.coveragerc` sets the source to the project root and filters the report down to
-`datatypical.py` and `datatypical_viz.py`.
+The published figure is measured with the Numba JIT off, because compiled
+kernels run as machine code and the line tracer cannot see them. Since v0.8.2
+`tests/conftest.py` sets `NUMBA_DISABLE_JIT=1` itself whenever coverage is
+measuring, so the commands above always give the published convention; an
+explicit `NUMBA_DISABLE_JIT` in the environment wins. With the JIT on, the same
+suite reports 95.8%.
 
-Ten statements in `datatypical.py` are unreachable and stay uncovered on
-purpose. They are listed under "Known gaps" in `CHANGELOG.md`.
+`.coveragerc` sets the source to the project root and filters the report down to
+`datatypical.py` and `datatypical_viz.py`. Every statement in both is covered;
+the unreachable branches the v0.8.0 notes listed have been removed.
 
 ### The script suites
 
@@ -244,12 +256,17 @@ Detailed Results:
 
 #### Performance Metrics
 
-```
-Fast Mode:         6-10× faster than publication mode
-Average Speedup:   ~6× across dataset sizes
-Shapley Overhead:  ~5-15× (expected for explanations)
-NMF Speedup:       ~3-5× faster than AA method
-```
+The suite prints the speed-ups it measures rather than asserting a figure.
+For reference, measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22 with ten features:
+
+| Samples | Shapley fit, `fast_mode=False` | `fast_mode=True` | ratio |
+| --- | --- | --- | --- |
+| 1,000 | 0.47 s | 0.21 s | 2.2x |
+| 5,000 | 5.2 s | 1.0 s | 5.2x |
+| 10,000 | 19.6 s | 2.8 s | 6.9x |
+
+The ratio grows with n because `fast_mode` skips the O(n^2) prototypical
+formative values.
 
 #### Running Scaling Tests
 
@@ -265,10 +282,10 @@ python DataTypical_scaling_test_suite.py
 ================================================================================
 
 Key findings:
-  • fast_mode=True skips formative (6x speedup)
+  • fast_mode=True skips formative; it pays off as n grows (see the scaling summary)
   • fast_mode=False computes formative (comprehensive)
   • NMF vs AA produce different archetypal rankings (expected)
-  • Fraction-based subsampling provides consistent speedup
+  • Fraction-based subsampling limits which samples are explained
   • Explanations work in both modes
 ================================================================================
 ```
@@ -394,7 +411,7 @@ Detailed Results:
 - Graph structure preserved in results
 
 **Mode Comparison:**
-- Fast mode: ~6× faster, skips formative
+- Fast mode: skips formative; at these small sizes it is not faster, since publication mode is exact
 - Publication mode: comprehensive, computes formative
 - Same method → high correlation (>0.6)
 - Different methods (NMF vs AA) → lower correlation (>0.2)
@@ -585,7 +602,7 @@ shapley_n_permutations=10
 
 1. **Use Fast Mode:**
 ```python
-fast_mode=True  # 6-10× speedup
+fast_mode=True  # skips the formative values
 ```
 
 2. **Reduce Permutations:**
@@ -762,7 +779,7 @@ dt = DataTypical(n_jobs=-1)  # Use all cores
 
 **2. Enable Fast Mode:**
 ```python
-# 6-10× speedup
+# Skips the formative values; see the measured speed-ups above
 dt = DataTypical(fast_mode=True)
 ```
 
@@ -786,7 +803,8 @@ shapley_n_permutations=100  # Thorough
 
 | DataTypical Version | Test Suite Version | Notes |
 |--------------------|--------------------|-------|
-| v0.7.x | Current | All tests pass |
+| v0.8.2 | Current | All tests pass |
+| v0.7.x | Script suites only | The pytest suite starts at v0.8.0 |
 | v0.6.x | Backward compatible | Unit tests verify v0.6 behavior |
 | v0.5.x | Partial | Autodetection not available |
 | v0.4.x | Limited | Shapley not available |
@@ -815,7 +833,7 @@ shapley_n_permutations=100  # Thorough
 ### Q1: Why do some tests use `fast_mode=True` and others `fast_mode=False`?
 
 **A:** We test both modes to ensure:
-- Fast mode works for rapid exploration (6-10× speedup)
+- Fast mode works for rapid exploration (it skips the formative values)
 - Publication mode works for comprehensive analysis (formative + explanations)
 - Both modes produce valid, consistent results
 
@@ -882,10 +900,10 @@ Steps to Reproduce:
 ## References
 
 ### Documentation
-- [DataTypical README](README.md)
-- [API Documentation](PACKAGE_SUMMARY.md)
-- [Quick Reference](QUICK_REFERENCE.md)
-- [Examples](EXAMPLES.md)
+- [DataTypical README](../README.md)
+- [API Documentation](../docs/PACKAGE_SUMMARY.md)
+- [Quick Reference](../docs/QUICK_REFERENCE.md)
+- [Examples](../docs/EXAMPLES.md)
 
 ### Test Files
 - [Unit Tests](DataTypical_unit_test_suite.py)
@@ -928,6 +946,6 @@ This test suite is part of DataTypical and is distributed under the same MIT Lic
 
 ---
 
-**Last Updated:** January 21, 2026  
-**Test Suite Version:** 0.7.0  
-**DataTypical Version:** 0.7.x
+**Last Updated:** October 22, 2026  
+**Test Suite Version:** 0.8.2  
+**DataTypical Version:** 0.8.2

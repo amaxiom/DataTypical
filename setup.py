@@ -1,4 +1,16 @@
+import re
+
 from setuptools import setup, find_packages
+
+
+def _version():
+    """datatypical.__version__, read without importing the module."""
+    with open("datatypical.py", "r", encoding="utf-8") as fh:
+        found = re.search(r'^__version__ = "([^"]+)"', fh.read(), re.MULTILINE)
+    if found is None:
+        raise RuntimeError("datatypical.py does not define __version__")
+    return found.group(1)
+
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
@@ -8,13 +20,13 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setup(
     name="datatypical",
-    version="0.8.1",
+    version=_version(),
     author="Amanda S. Barnard",
     description="Explainable instance significance discovery for scientific datasets",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/amaxiom/DataTypical",
-    packages=find_packages(),
+    py_modules=["datatypical", "datatypical_viz"],
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Science/Research",
@@ -25,6 +37,8 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
     python_requires=">=3.8",
     install_requires=requirements,

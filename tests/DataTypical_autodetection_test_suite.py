@@ -1,5 +1,5 @@
 """
-DataTypical v0.7 - Auto-Detection Test Suite
+DataTypical v0.8.2 - Auto-Detection Test Suite
 =============================================
 Tests automatic data format detection for:
 1. Tabular data (DataFrames, arrays)
@@ -24,7 +24,7 @@ warnings.filterwarnings('ignore')
 from datatypical import DataTypical
 
 print("="*80)
-print("DataTypical v0.7 - Auto-Detection Test Suite")
+print("DataTypical v0.8.2 - Auto-Detection Test Suite")
 print("="*80)
 
 

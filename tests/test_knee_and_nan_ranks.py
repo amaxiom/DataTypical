@@ -215,9 +215,12 @@ class TestParallelDeterminism:
             warnings.simplefilter("ignore")
             reference = DataTypical(n_jobs=1, **common).fit_transform(df)
             got = DataTypical(n_jobs=n_jobs, **common).fit_transform(df)
+        # A rank that was not computed is a column of None (object dtype).
+        # to_numeric turns it into NaN, which assert_allclose compares as
+        # equal; fillna(0) stopped converting object columns in pandas 3.
         for col in [c for c in reference.columns if c.endswith("_rank")]:
             np.testing.assert_allclose(
-                reference[col].fillna(0).to_numpy(),
-                got[col].fillna(0).to_numpy(), atol=1e-9,
+                pd.to_numeric(reference[col], errors="coerce").to_numpy(float),
+                pd.to_numeric(got[col], errors="coerce").to_numpy(float), atol=1e-9,
                 err_msg="%s changed with n_jobs=%s" % (col, n_jobs),
             )

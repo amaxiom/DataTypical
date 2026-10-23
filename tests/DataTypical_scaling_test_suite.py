@@ -1,5 +1,5 @@
 """
-DataTypical v0.7 - Performance and Scaling Test Suite
+DataTypical v0.8.2 - Performance and Scaling Test Suite
 ======================================================
 Tests performance scaling across dataset sizes and configuration options:
 1. fast_mode presets (True vs False)
@@ -27,7 +27,7 @@ import time
 from datatypical import DataTypical
 
 print("=" * 80)
-print("DataTypical v0.7 - Performance and Scaling Test Suite")
+print("DataTypical v0.8.2 - Performance and Scaling Test Suite")
 print("=" * 80)
 print("\nRUNNING PERFORMANCE TEST SUITE")
 
@@ -116,7 +116,12 @@ speedup = time2 / time1
 print(f"  Fast mode: {time1:.2f}s")
 print(f"  Publication mode: {time2:.2f}s")
 print(f"  Overall speedup: {speedup:.1f}x")
-assert speedup >= 1.3, f"Expected >= 1.3x speedup, got {speedup:.1f}x"
+# Since v0.8.2 every Shapley value in publication mode is exact, so on a
+# dataset this small publication mode can be as fast as fast mode, or faster:
+# NMF's iterations then cost more than the closed forms save. fast_mode pays
+# off as n grows, because it skips the O(n^2) prototypical formative values
+# (measured 2.2x at 1,000 samples, 6.9x at 10,000; see TEST_SUITE_GUIDE.md).
+# The ratio is reported, not asserted.
 
 # Measure base operations (no Shapley)
 start = time.time()
@@ -142,7 +147,7 @@ print(f"    Base operations: {time_base:.2f}s (NMF, facility location)")
 print(f"    Shapley (fast): {shapley_fast:.2f}s (explanations only)")
 print(f"    Shapley (pub): {shapley_pub:.2f}s (formative + explanations)")
 print(f"  Shapley-only speedup: {shapley_speedup:.1f}x")
-print(f"  [OK] Good speedup - fast mode skips formative computation")
+print(f"  [OK] Reported; fast mode skips the formative computation")
 
 # ============================================================================
 # Test 3: Custom Override (fraction-based subsampling)
@@ -414,8 +419,9 @@ print("  " + "-"*60)
 
 avg_speedup = np.mean([r['speedup'] for r in results_scaling])
 print(f"\n  Average speedup: {avg_speedup:.1f}x")
-assert avg_speedup >= 2.0, f"Average speedup too low: {avg_speedup:.1f}x"
-print(f"  [OK] Consistent ~5x speedup (formative skipped in fast mode)")
+# Reported, not asserted: at these sizes (50 to 500 samples) the exact
+# publication-mode computation is fast enough that the ratio is near 1.
+print(f"  [OK] Publication time / fast time: {avg_speedup:.1f}x on average here (reported, not asserted)")
 
 # ============================================================================
 # Test 10: Shapley Overhead Measurement
@@ -545,9 +551,9 @@ print("\n" + "="*80)
 print("[OK] ALL TESTS PASSED")
 print("="*80)
 print("\nKey findings:")
-print("  - fast_mode=True skips formative (6x speedup)")
+print("  - fast_mode=True skips formative; it pays off as n grows (see the scaling summary)")
 print("  - fast_mode=False computes formative (comprehensive)")
 print("  - NMF vs AA produce different archetypal rankings (expected)")
-print("  - Fraction-based subsampling provides consistent speedup")
+print("  - Fraction-based subsampling limits which samples are explained")
 print("  - Explanations work in both modes")
 print("="*80)

@@ -351,6 +351,7 @@ class TestVerboseShapley:
             shapley_mode=True, shapley_n_permutations=4, shapley_top_n=6,
             shapley_compute_formative=False, archetypal_method="nmf", nmf_rank=3,
             n_prototypes=4, stereotype_column="Age", verbose=True, random_state=0,
+            explanation_method="monte_carlo",
         )
         dt.fit_transform(df)
         out = capsys.readouterr().out
@@ -687,7 +688,7 @@ class TestDefensiveBranches:
         """The guard inside _compute_stereotypical_rank, past config validation."""
         dt = DataTypical(stereotype_column="Age", random_state=0)
         dt.stereotype_target = "middling"
-        with pytest.raises(ValueError, match="stereotype_target must be"):
+        with pytest.raises(ConfigError, match="stereotype_target must be"):
             dt._compute_stereotypical_rank(
                 np.zeros((len(df_small), 2)), df_small.index, df_small["Age"]
             )

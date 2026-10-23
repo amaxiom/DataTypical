@@ -1,5 +1,5 @@
 """
-DataTypical v0.7 - Visualization Test Suite
+DataTypical v0.8.2 - Visualization Test Suite
 ==========================================
 Complete test coverage for all visualization functions.
 Run this after unit tests and benchmarks to validate visualization layer.
@@ -27,7 +27,7 @@ from datatypical_viz import (
 )
 
 print("="*80)
-print("DataTypical v0.7 - Visualization Test Suite")
+print("DataTypical v0.8.2 - Visualization Test Suite")
 print("="*80)
 
 # ============================================================================

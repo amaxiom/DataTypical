@@ -5,8 +5,8 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/datatypical.svg)](https://pypi.org/project/datatypical/)
-[![Tests](https://img.shields.io/badge/tests-748%20passing-21918c.svg)](tests/)
-[![Coverage](https://img.shields.io/badge/coverage-99.5%25-22a884.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-914%20passing-21918c.svg)](tests/)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-22a884.svg)](tests/)
 
 DataTypical analyzes datasets through three complementary lenses: archetypal (extreme), prototypical (representative), and stereotypical (target-like), with Shapley value explanations revealing why instances matter and which ones create your dataset's structure.
 
@@ -15,11 +15,11 @@ DataTypical analyzes datasets through three complementary lenses: archetypal (ex
 ## Key Features
 
 - **Three Significance Types**: Archetypal, prototypical, stereotypical (all computed simultaneously, or selectively)
-- **Shapley Explanations**: Feature-level attributions for why samples are significant
+- **Shapley Explanations**: Feature-level attributions for why samples are significant, computed exactly
 - **Formative Discovery**: Distinguish samples that ARE significant from those that CREATE structure
-- **Publication Visualizations**: Dual-perspective scatter plots, heatmaps, and profile plots
+- **Publication Visualizations**: Dual-perspective scatter plots, heatmaps, and profile plots, for tabular, text and graph fits
 - **Multi-Modal Support**: Tabular data, text, and graph networks through unified API
-- **Performance Optimized**: Fast exploration mode and efficient Shapley computation
+- **Exact by Default**: Closed forms for every Shapley game, so results do not depend on a random seed
 
 ---
 
@@ -75,7 +75,7 @@ profile_plot(dt, top_idx, significance='archetypal')
 | **Prototypical** | Representative, central samples | Dataset summarization, cluster centers, typical examples |
 | **Stereotypical** | Target-similar samples | Optimization, goal-oriented selection, phenotype matching |
 
-**The Power**: All three computed simultaneously—different perspectives reveal different insights.
+**The Power**: All three computed simultaneously, and different perspectives reveal different insights.
 
 ### Dual Perspective (with Shapley)
 
@@ -96,7 +96,7 @@ Redundant │ Replaceable
      Formative Low
 ```
 
-This distinction—between what IS significant vs what CREATES structure—is a genuinely novel contribution.
+This distinction, between what IS significant and what CREATES structure, is a genuinely novel contribution.
 
 ---
 
@@ -137,28 +137,48 @@ for idx in critical.index:
 
 ## Performance
 
-### Formative-Shapley speed (v0.7.7)
+Since v0.8.2 every Shapley game DataTypical plays has a closed form, so a
+publication-mode fit samples nothing. Measured on an Intel Core Ultra 9 285K
+(24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba
+0.62.1, on 2026-10-22, with ten features, best of two fits after a warm-up:
 
-In publication mode (`shapley_mode=True`, `fast_mode=False`) the cost of the
-formative-instance computation now scales linearly (archetypal, stereotypical)
-or quadratically (prototypical) in the number of samples, instead of
-quadratically/cubically. Rankings are numerically identical to v0.7.6 — only
-runtime changes.
+| Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
+| --- | --- | --- | --- | --- |
+| 1,000 | 0.30 s | 0.13 s | 0.47 s | 0.21 s |
+| 5,000 | 1.65 s | 0.85 s | 5.2 s | 1.0 s |
+| 10,000 | 4.0 s | 3.0 s | 19.6 s | 2.8 s |
 
-| Samples | Formative step, v0.7.6 | Formative step, v0.7.7 |
-|---------|------------------------|------------------------|
-| 1,000   | ~40 seconds            | < 0.1 seconds          |
-| 2,000   | ~6.5 minutes           | ~0.3 seconds           |
-| 10,000  | ~13 hours (est.)       | ~8 seconds (est.)      |
+"Shapley" is `shapley_mode=True` with a `stereotype_column`, so formative
+values and explanations for all three significance types. With both computed
+by permutation sampling instead (`'monte_carlo'`, 100 permutations, as through
+v0.7.7), the same 1,000-sample Shapley fit took 445 seconds, and 103 with
+`fast_mode`.
 
-*Measured single-threaded, M = 30 permutations, d = 8 features, summed over the
-archetypal, prototypical, and stereotypical value functions. The 10,000-sample
-row is extrapolated from the measured scaling.*
+Of the Shapley computations, the prototypical formative values are the one
+that grows as n^2, so they come to dominate as n grows; the other formative
+values cost O(n log n) and the explanations O(d) per sample.
 
-The remaining publication-mode cost is the per-sample feature **explanations**
-(a separate Shapley computation). Bound this with `shapley_top_n` to explain only
-the most significant samples; it is the main lever on full-pipeline runtime once
-the formative step is no longer the bottleneck.
+`fast_mode=True` swaps archetypal analysis for NMF and skips the formative
+values, which is where the difference in the table comes from. Its other
+settings (30 permutations, explanations for the top half of the samples) only
+matter when sampling is asked for with `formative_method='monte_carlo'` or
+`explanation_method='monte_carlo'`.
+
+### Numba and its NumPy fallback
+
+The distance and coalition kernels are compiled with Numba when it works, and
+`datatypical.NUMBA_AVAILABLE` says whether they are in use. Without a working
+Numba, vectorised NumPy versions of the same arithmetic run instead, with a
+warning at import. Results are identical, and at the sizes above a fit took
+at most 4 per cent longer, sometimes less time, because the kernels are a small
+part of a fit. Through v0.8.1 there was no fallback, and the kernels ran as
+interpreted loops, thousands of times slower.
+
+Compiled kernels are cached on disk, in `NUMBA_CACHE_DIR` when it is set and
+otherwise beside the installed module. Where that folder cannot be written,
+such as a system-wide install, caching is turned off and the kernels compile
+once per session, about a second and a half. Through v0.8.1 such an install
+made `import datatypical` hang.
 
 ### Optimization Strategy
 
@@ -166,24 +186,25 @@ the formative step is no longer the bottleneck.
 interesting samples.
 
 **Phase 2**: Detailed analysis (`shapley_mode=True`) to generate formative
-rankings, explanations, and publication figures. Set `shapley_top_n` to cap how
-many samples receive feature-level explanations.
+rankings, explanations, and publication figures.
 
 ---
 
 ## Key Parameters
 
+The defaults, with the ones most often changed:
+
 ```python
 DataTypical(
     # Enable explanations and formative analysis
-    shapley_mode=False,           # True for explanations
+    shapley_mode=False,           # True for explanations and formative ranks
 
     # Speed vs accuracy
-    fast_mode=True,               # False for publication quality
+    fast_mode=False,              # True for exploration: NMF, no formative values
 
     # Significance types
-    n_archetypes=8,               # Number of extreme corners
-    n_prototypes=8,               # Number of representatives
+    nmf_rank=8,                   # Number of archetypes (extreme corners)
+    n_prototypes=20,              # Number of representatives
     stereotype_column=None,       # Target column for stereotypical
     stereotype_target='max',      # 'max', 'min', or numeric value
 
@@ -194,15 +215,17 @@ DataTypical(
     # Selective computation
     selected_significance=None,   # 'archetypal', 'prototypical', 'stereotypical', or None (all)
 
-    # Shapley optimization
-    shapley_top_n=500,            # Limit explanations to top N
-    shapley_n_permutations=100,   # Number of permutations (30 in fast_mode)
+    # How the Shapley values are computed
+    formative_method='exact',     # or 'monte_carlo' for permutation sampling
+    explanation_method='exact',   # or 'monte_carlo' for permutation sampling
+    shapley_top_n=None,           # explain only the top N (or fraction) of samples
+    shapley_n_permutations=100,   # used only by 'monte_carlo' (30 in fast_mode)
 
     # Reproducibility
-    random_state=None,            # Set for reproducible results
+    random_state=42,
 
     # Memory management
-    max_memory_mb=8000            # Memory limit for operations
+    max_memory_mb=2048            # Memory limit for chunked operations
 )
 ```
 
@@ -232,9 +255,9 @@ any output. Use `stereotype_column` with `stereotype_target` instead.
 
 ### Formative instances and convergence
 
-The formative ranking is a Monte Carlo Shapley estimate, and it converges far
-more slowly than the default suggests. Measured on synthetic data, two fits
-differing only in `random_state`:
+Through v0.7.7 the formative ranking was a Monte Carlo Shapley estimate, and it
+converges far more slowly than the default permutation count suggests. Measured
+on synthetic data, two fits differing only in `random_state`:
 
 | Permutations | Spearman rho between seeds | Top-10 overlap |
 | --- | --- | --- |
@@ -259,11 +282,12 @@ It costs O(n log n) per archetype, about 0.006 seconds at n = 5000, and is
 verified against exhaustive coalition enumeration. The result is identical
 whatever `random_state` you use.
 
-The stereotypical formative values reduce the same way. The prototypical game
-does not reduce, but it decomposes: the maximum is attained at the first
-neighbour present in the coalition, which turns the value function into a
-weighted sum of indicator games, each with a closed form. That costs O(n^2)
-rather than O(n log n), and it is exact.
+The stereotypical formative values reduce the same way: that value function is
+a plain mean over the coalition, which has its own closed form. The
+prototypical game does not reduce, but it decomposes: the maximum is attained
+at the first neighbour present in the coalition, which turns the value function
+into a weighted sum of indicator games, each with a closed form. That costs
+O(n^2) rather than O(n log n), and it is exact.
 
 **All three formative games are therefore exact by default, and the formative
 ranking no longer depends on `random_state` at all.** To reproduce a result
@@ -274,7 +298,8 @@ Wine at the documented 100 permutations, five seeds produced five different top
 formative prototypes, with pairwise rank correlations of 0.03 to 0.17 and a
 top-ten overlap of 0 or 1 out of 10 in nine of the ten seed pairs.
 
-Both closed forms are available directly, if you want the values without a fit:
+All three closed forms are available directly, if you want the values without
+a fit:
 
 ```python
 from datatypical import (exact_formative_archetypal,
@@ -286,24 +311,27 @@ exact_formative_prototypical(scaled_X)
 exact_formative_stereotypical(target_values, target='max')
 ```
 
-The same setting also makes the **stereotypical** formative values exact: that
-value function is a plain mean over the coalition, which has its own closed
-form. The **prototypical** game does not reduce, so it stays Monte Carlo and the
-advice below still applies to it.
-
-> **Worth knowing about the stereotypical formative axis.** Its closed form is
-> affine in the deviation from the median, so the ranking is a monotone
-> transform of `stereotype_column` and carries no information beyond it. Both
-> axes of the stereotypical dual-perspective plot are driven by that one column,
-> which makes the panel a curve rather than a scatter. This is a property of the
-> published value function, not of the exact implementation. The archetypal
-> formative axis is genuinely distinct by comparison.
+> **Worth knowing about the stereotypical formative axis.** Its value function
+> is `v(S) = |median - tau| - mean over S of |y_i - tau|`, with `tau` the column
+> maximum, minimum or numeric target, exactly as `stereotypical_rank` resolves
+> it. The closed form is affine in `|y_i - tau|`, so the formative ranking is
+> the same ordering as `stereotypical_rank` and carries no information beyond
+> `stereotype_column`. Both axes of the stereotypical dual-perspective plot are
+> driven by that one column, which makes the panel a curve rather than a
+> scatter. This is a property of the published value function, not of the exact
+> implementation. The archetypal formative axis is genuinely distinct by
+> comparison.
+>
+> **Changed in v0.8.2.** For `stereotype_target='max'` or `'min'` the formative
+> game used to score the excess over the median instead, clipped at zero, which
+> tied every sample on the far side of the median. Numeric targets are
+> unchanged.
 
 **Check `split_half_rho` before reporting a Monte Carlo formative result:**
 
 ```python
 dt = DataTypical(shapley_mode=True, shapley_compute_formative=True,
-                 shapley_n_permutations=100)
+                 formative_method='monte_carlo', shapley_n_permutations=100)
 dt.fit_transform(data)
 
 dt.shapley_info_['archetypal_formative']['split_half_rho']
@@ -314,6 +342,44 @@ rankings. Below about 0.7 the ordering is mostly sampling noise, and a
 `RuntimeWarning` says so. Raise `shapley_n_permutations` until the number stops
 rising. The actual ranks, `archetypal_rank` and the rest, are fully
 deterministic and are not affected by any of this.
+
+Sampling stops early only when the estimate has settled, and never before
+`max(50, 20 + 10 * shapley_early_stopping_patience)` permutations: 120 at the
+default patience, so at the default 100 permutations every run uses all 100.
+With `verbose=True` a fit says so, and states how many coalition values the
+sampling will compute, before starting it.
+
+### Feature-level explanations
+
+The explanations, which feature makes each sample significant, are Shapley
+values too: one game per sample, played over its features. **Since v0.8.2 they
+are exact by default** (`explanation_method='exact'`). Each of the three games
+reduces to a mean game or a variance game over the features, and both have
+closed forms, so the explanations cost O(d) per sample and do not depend on
+`random_state`. Each closed form is verified against exhaustive coalition
+enumeration.
+
+That matters most for wide data. On a corpus of 100 documents and 1,277 terms,
+sampled explanations at the default 100 permutations took about twenty-five
+minutes per significance type. The exact ones take 3 to 6 milliseconds per
+significance type, measured on a synthetic corpus of the same shape (100
+documents by 1,381 terms), and the whole Shapley fit 0.6 seconds.
+
+```python
+from datatypical import (exact_explanations_archetypal,
+                         exact_explanations_prototypical,
+                         exact_explanations_stereotypical)
+
+exact_explanations_archetypal(scaled_X)
+exact_explanations_prototypical(scaled_X)
+exact_explanations_stereotypical(scaled_X, target_values, target='max')
+```
+
+Pass `explanation_method='monte_carlo'` to reproduce a result computed before
+v0.8.2. The sampled values estimate the same quantities, but at 100
+permutations they differ from the exact values by a median of 15 to 27 per cent,
+and name a different most important feature for 11 to 26 per cent of
+samples (measured on 300 rows of the MAGIC telescope data).
 
 ### Reading the ranks
 
@@ -422,7 +488,7 @@ naming the column.
 
 ### `selected_significance`
 
-When you only need one significance type, set `selected_significance` to skip the others entirely—saving substantial compute time:
+When you only need one significance type, set `selected_significance` to skip the others entirely, saving substantial compute time:
 
 ```python
 # Only compute archetypal (skip prototypical and stereotypical)
@@ -454,6 +520,28 @@ profile_plot(dt, sample_idx,
              significance='archetypal',
              order='local')  # or 'global'
 ```
+
+All three serve tabular, text and graph fits: a text fit is labelled by its
+vocabulary, a graph fit by its node features and topology columns.
+
+**Sizing.** Each plot is built around a fixed plot area, so long labels enlarge
+the figure rather than squeezing the plot. Choose the area with `plot_size`:
+
+```python
+significance_plot(results, significance='archetypal', plot_size=(6, 6))
+```
+
+Text, markers and colour bars scale with it, so a larger plot keeps its
+proportions. `figsize` still fixes the whole canvas instead, as it did before
+v0.8.2. When there are more features or samples than can be labelled legibly,
+the plot shows as many as fit and says so; `top_features` and `top_n` choose
+another number. Long sample labels are shortened in the middle beyond
+`max_label_length` characters, and `sample_labels` replaces them outright.
+
+**Style.** Viridis throughout, with two categories in viridis purple and green;
+one font size per role (12 points for ticks and legends, 14 for axis labels and
+titles); nothing bold; legends outside the plot and without a frame. Importing
+`datatypical_viz` leaves matplotlib's global settings alone.
 
 See [docs/VISUALIZATION_GUIDE.md](docs/VISUALIZATION_GUIDE.md) for detailed interpretation.
 
@@ -510,20 +598,19 @@ results = dt.fit_transform(node_features, edges=edges)
 ## Documentation
 
 **New Users**:
-- [docs/START_HERE.md](docs/START_HERE.md) — Friendly introduction and first steps
-- [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) — Daily reference for parameters and workflows
-- [docs/EXAMPLES.md](docs/EXAMPLES.md) — Complete worked examples across domains
+- [docs/START_HERE.md](docs/START_HERE.md): friendly introduction and first steps
+- [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md): daily reference for parameters and workflows
+- [docs/EXAMPLES.md](docs/EXAMPLES.md): complete worked examples across domains
 
 **Visualization**:
-- [docs/VISUALIZATION_GUIDE.md](docs/VISUALIZATION_GUIDE.md) — Comprehensive guide to plots and interpretation
+- [docs/VISUALIZATION_GUIDE.md](docs/VISUALIZATION_GUIDE.md): comprehensive guide to plots and interpretation
 
 **Advanced**:
-- [docs/INTERPRETATION_GUIDE.md](docs/INTERPRETATION_GUIDE.md) — Interpreting complex patterns
-- [docs/COMPUTATION_GUIDE.md](docs/COMPUTATION_GUIDE.md) — Implementation details and algorithms
+- [docs/INTERPRETATION_GUIDE.md](docs/INTERPRETATION_GUIDE.md): interpreting complex patterns
+- [docs/COMPUTATION_GUIDE.md](docs/COMPUTATION_GUIDE.md): implementation details and algorithms
 
 **Benchmarks**:
-- [benchmarks/](benchmarks/) — Structural-significance benchmarks (model-free comparison, bounded metrics, synthetic ground truth) and the v0.7.7 scaling study. See its `README.md`, and run `Benchmarks.ipynb` for the same experiments with figures shown inline.
-- Superseded benchmark drafts are retained under [DRAFTS/](DRAFTS/).
+- [benchmarks/](benchmarks/): structural-significance benchmarks (model-free comparison, bounded metrics, synthetic ground truth) and the formative-Shapley scaling study, re-run with v0.8.2. See its `README.md`, and run `Benchmarks.ipynb` for the same experiments with figures shown inline.
 
 ---
 
@@ -536,8 +623,13 @@ results = dt.fit_transform(node_features, edges=edges)
 - scikit-learn ≥ 1.0
 - Matplotlib ≥ 3.3
 - Seaborn ≥ 0.11
-- Numba ≥ 0.55 (for performance)
+- Numba ≥ 0.55 (compiled kernels; without it a NumPy fallback runs, with a warning)
+- NetworkX ≥ 2.6 (graph topology features)
 - py_pcha ≥ 0.1.3 (required for `archetypal_method='aa'`)
+- joblib ≥ 1.0 and threadpoolctl ≥ 2.0 (parallelism and thread control)
+
+All eleven are installed by `pip install datatypical`. The installed version is
+`datatypical.__version__`.
 
 ---
 
@@ -551,7 +643,7 @@ If you use DataTypical in your research, please cite:
   title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
   year = {2026},
   url = {https://github.com/amaxiom/DataTypical},
-  version = {0.8.1}
+  version = {0.8.2}
 }
 ```
 
@@ -584,7 +676,41 @@ This dual perspective transforms instance significance from pure ranking into ca
 
 ## Development Status
 
-**Current Version**: 0.8.1
+**Current Version**: 0.8.2
+
+**Recent Updates (v0.8.2)**, see [CHANGELOG.md](CHANGELOG.md):
+- **Fixed an import that could hang.** From a folder the user cannot write to,
+  such as a system-wide Anaconda install on Windows, Numba's cache check
+  retried up to 2**31 - 1 times. The folder is now tested with one real write,
+  and caching is turned off where it would fail.
+- **Fixed a Numba fallback that did not fall back.** Without a working Numba
+  the compiled kernels ran as interpreted loops, thousands of times slower,
+  and nothing said so. Vectorised NumPy versions now run instead, with a
+  warning, and `NUMBA_AVAILABLE` reports which path is in use.
+- **Added `explanation_method`, defaulting to `'exact'`**: closed forms for
+  all three feature-level explanation games, so explanations no longer depend
+  on the seed and cost O(d) per sample. New public functions
+  `exact_explanations_archetypal`, `exact_explanations_prototypical` and
+  `exact_explanations_stereotypical`. This **changes the explanations** any
+  earlier version produced; `explanation_method='monte_carlo'` reproduces them.
+  See [Feature-level explanations](#feature-level-explanations).
+- **The stereotypical formative game now measures the same distance as the
+  stereotypical rank** for `stereotype_target='max'` and `'min'`, which
+  **changes those formative values**. Numeric targets are unchanged.
+- **The visualisations serve text and graph fits**, take a `plot_size`, scale
+  their text and markers with it, and no longer render blank or illegible at
+  large feature counts. Importing `datatypical_viz` no longer changes
+  matplotlib's global settings. See [Visualization](#visualization).
+- Fixed a Shapley fit with an ordered categorical `stereotype_column`, a
+  `formative_method` error message that named the wrong default, and
+  stereotypical explanations drawn as zeros where none existed.
+- Added `__version__`, the one place the version is written down.
+- Declared `joblib` and `threadpoolctl`, which were imported but never declared.
+- pytest suite: 914 tests, 100% statement coverage of both modules, measured
+  with `NUMBA_DISABLE_JIT=1` because compiled kernels are invisible to the line
+  tracer. `tests/conftest.py` sets that whenever coverage is measuring, so the
+  figure cannot be taken the other way by accident; with the JIT active the
+  same suite reports 95.8%.
 
 **v0.8.1** fixes archetypal analysis on NumPy 2. `py_pcha` calls `np.mat`, removed in NumPy 2.0, so a fresh install of v0.8.0 could not run `archetypal_method='aa'` at all. Through v0.7.7 the same failure fell through to ConvexHull **silently**, so any `'aa'` result from v0.7.7 or earlier on NumPy 2 is a ConvexHull approximation. See [CHANGELOG.md](CHANGELOG.md).
 
@@ -652,13 +778,10 @@ This dual perspective transforms instance significance from pure ranking into ca
 - Fixed two further silent or crashing paths found while writing the test suite:
   a `stereotype_column` supplied for text data without `text_metadata` was
   ignored, and verbose text or graph fits with a `stereotype_column` crashed.
-- Added a pytest suite: 748 tests, 99.5% statement coverage. Coverage is measured
-  with `NUMBA_DISABLE_JIT=1`, because the nine compiled kernels run as machine
-  code and the line tracer cannot see them otherwise; with compilation active the
-  same suite reports 94.4%.
+- Added a pytest suite, 738 tests at release.
 
 **Recent Updates (v0.7.7)**:
-- Streaming formative-Shapley computation: each Monte Carlo permutation now updates the value functions incrementally along the growing coalition instead of recomputing them from scratch at every step. Per-fit complexity drops from O(M·n²) to O(M·n) for archetypal and stereotypical significance, and from O(M·n³) to O(M·n²) for prototypical. Rankings are numerically identical to v0.7.6 — only runtime changes.
+- Streaming formative-Shapley computation: each Monte Carlo permutation now updates the value functions incrementally along the growing coalition instead of recomputing them from scratch at every step. Per-fit complexity drops from O(M·n²) to O(M·n) for archetypal and stereotypical significance, and from O(M·n³) to O(M·n²) for prototypical. Rankings are numerically identical to v0.7.6; only runtime changes.
 - The formative step at n = 10,000 now completes in seconds rather than hours, making publication-mode fits on large datasets practical.
 - Console and verbose output is now ASCII-only, so logs and the test suites run cleanly under any terminal encoding (including Windows cp1252).
 
@@ -676,7 +799,7 @@ This dual perspective transforms instance significance from pure ranking into ca
 
 ## License
 
-MIT License — See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details.
 
 Copyright (c) 2026 Amanda S. Barnard
 

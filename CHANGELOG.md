@@ -7,6 +7,267 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [0.8.2] - 2026-10-22
+
+Fixes for an import that could hang and a Numba fallback that did not fall
+back, exact feature-level explanations, and visualisations that work for every
+fit type and at every size. Two changes alter numbers a previous version
+produced, and both are marked **This changes numbers** below: the feature-level
+explanations, and the stereotypical formative values under
+`stereotype_target='max'` or `'min'`.
+
+### Fixed
+
+- **`import datatypical` could hang forever.** Numba tests a kernel's cache
+  folder when the kernel is decorated, which happens at import, and it tests it
+  with `tempfile`. On Windows, `os.access` reports a folder writable whenever
+  its read-only attribute is clear, whatever its permissions say, so in a
+  folder the user cannot write to, such as a system-wide Anaconda
+  `site-packages`, CPython reads each refused creation as a name collision and
+  tries another name, up to 2**31 - 1 times. The import pinned a core and never
+  returned. DataTypical now tests the cache folder itself with one real write
+  and turns caching off where that write fails; the kernels then compile once
+  per session instead, about a second and a half. `NUMBA_CACHE_DIR` is honoured
+  when set, so such an install can still keep a cache elsewhere. Nothing
+  process-wide is changed.
+
+- **Without a working Numba the compiled kernels ran in the interpreter.** The
+  import guard replaced `jit` with a no-op and `prange` with `range`, and
+  `NUMBA_AVAILABLE` was assigned and then read nowhere, so there was no
+  alternative code path: the kernels, nested loops written for a compiler, ran
+  as interpreted Python, thousands of times slower, and nothing said so. Every
+  kernel now has a vectorised NumPy twin computing the same arithmetic,
+  `NUMBA_AVAILABLE` selects between them, and a missing or broken Numba is
+  reported once, at import, with a `RuntimeWarning` naming the cause. Measured
+  on the development machine, an Intel Core Ultra 9 285K (24 threads, 64 GB)
+  under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on
+  2026-10-22, in ten dimensions:
+
+  | n x n points | compiled | NumPy fallback | interpreted (v0.8.1) |
+  | --- | --- | --- | --- |
+  | 200 | 0.06 ms | 0.09 ms | 62 ms |
+  | 500 | 0.07 ms | 0.77 ms | 390 ms |
+  | 1,000 | 0.21 ms | 3.4 ms | 1,549 ms |
+  | 2,000 | 0.55 ms | 13.8 ms | not run |
+
+  That is the minimum-distance kernel; the cosine kernel is 1.6 to 4 times
+  slower as NumPy than compiled, and 840 to 1,980 times slower interpreted.
+
+  At the level of a whole fit, where most of the time is spent outside the
+  kernels, the fallback costs little:
+
+  | Fit (`shapley_mode=True`) | compiled | NumPy fallback |
+  | --- | --- | --- |
+  | 1,000 samples | 0.47 s | 0.44 s |
+  | 5,000 samples | 5.24 s | 5.45 s |
+  | 10,000 samples | 19.6 s | 20.0 s |
+  | 1,000 samples, sampled (`'monte_carlo'`) | 445 s | 444 s |
+
+  Across every configuration timed, the fallback was never more than 4 per
+  cent slower, and sometimes faster: the kernels are a small part of a fit.
+
+  The guard also caught `(ImportError, Exception)`, which is just `Exception`,
+  and swallowed it. It now separates a Numba that cannot be imported from one
+  that imports but cannot compile, and reports which. `NUMBA_AVAILABLE` means
+  "the compiled kernels are in use", so it is also `False` under
+  `NUMBA_DISABLE_JIT=1`.
+
+- **A Shapley fit with an ordered categorical `stereotype_column` raised.**
+  `fit()` has accepted ordered categoricals since v0.8.0, but the formative
+  step converted the column with a plain float cast, which they refuse. It now
+  goes through the same conversion as the actual rank.
+
+- **The `formative_method` error message named the wrong default.** It said
+  `'monte_carlo'` was the default; the default has been `'exact'` since v0.8.0.
+  Exact versus sampled is the distinction the formative argument rests on, so a
+  reader of that message would have doubted every fit they had made. The
+  message is now built from the declared default, and a test asserts it.
+
+- **Stereotypical explanations were drawn where none existed.** Without a
+  `stereotype_column` there is no stereotypical explanation game, but under
+  `shapley_top_n` subsampling `Phi_stereotypical_explanations_` was left as an
+  all-zero array, which the plots then drew as real explanations. It is now
+  `None` whenever there is no `stereotype_column`.
+
+- **`joblib` and `threadpoolctl` were imported unguarded and declared
+  nowhere.** Installs worked only because scikit-learn happens to pull both in.
+  Both are now in `requirements.txt` and the package metadata, and a test
+  checks every third-party import against the declared list.
+
+- **`heatmap()` and `profile_plot()` produced figures with nothing in them at
+  large feature counts.** At the 1,278 terms of a text corpus the heatmap's
+  white separators covered the plot entirely and the profile's tick labels
+  overprinted into a solid block, with no warning. When there are more features
+  than fit legibly, both now show as many as fit and say so once with a
+  `UserWarning`; `top_features` chooses another count, and is always honoured.
+  The separators are dropped past 60 columns.
+
+- **One missing value made a whole feature colourless in `profile_plot()`.**
+  The colour scale was normalised with `min` and `max`, which return NaN for
+  any column holding a NaN. It now uses `nanmin` and `nanmax`, so only the
+  sample whose value is missing loses its colour.
+
+- **Long sample labels took over the heatmap.** The automatic labels are
+  composed from feature values, so on one published dataset they ran to thirty
+  characters and gave the heatmap a left margin wider than its data. Labels
+  are now elided in the middle beyond `max_label_length` (24 characters by
+  default; `None` keeps them whole), and the new `sample_labels` parameter
+  chooses them outright. The rotated y-axis label, taller than a ten-row plot
+  and so stretching the figure, is now "Samples (by Actual Rank)" or "Samples
+  (by Formative Rank)".
+
+### Added
+
+- **`explanation_method`, defaulting to `'exact'`**: closed forms for all three
+  feature-level explanation games, with no sampling and no seed dependence.
+  Each game is played over the features of one sample, and each reduces:
+
+  - archetypal: the mean, over the coalition's features, of
+    `1 - 2 * min(x, 1 - x)`, a mean game;
+  - prototypical: the variance of the sample's values over the coalition's
+    features, which decomposes into single and pair indicator games, each with
+    a closed form;
+  - stereotypical: the sample's weight times the mean of `|x|` over the
+    coalition, a scaled mean game.
+
+  For a mean game over `n` players with values `c`,
+
+      phi_i = (1/n) * [ c_i + (c_i - mbar_i) * (H_n - 1) ]
+
+  with `mbar_i` the mean of `c` over the other players and `H_n` the nth
+  harmonic number. All three are verified against exhaustive coalition
+  enumeration to machine precision, and satisfy efficiency exactly. They cost
+  O(d) per sample, against O(M d^2) value-function evaluations for permutation
+  sampling: on a text corpus of 100 documents and 1,277 terms the sampled
+  explanations took about twenty-five minutes per significance type at the
+  default 100 permutations. The exact ones take 3 to 6 milliseconds per
+  significance type, measured on a synthetic corpus of the same shape (100
+  documents by 1,381 terms), and the whole Shapley fit 0.6 seconds.
+
+  New public functions `exact_explanations_archetypal(X)`,
+  `exact_explanations_prototypical(X)` and
+  `exact_explanations_stereotypical(X, target_values, target)`. Sampling is
+  still reachable with `explanation_method='monte_carlo'`, which reproduces a
+  pre-0.8.2 result.
+
+  **This changes numbers.** The sampled explanations were unbiased estimates of
+  these same values, so the exact ones are what they were converging towards,
+  but at 100 permutations they had not arrived. On 300 rows of the MAGIC
+  telescope data (10 features), the sampled explanation of a sample differed
+  from the exact one by a median of 15 to 27 per cent, depending on the
+  significance type, and named a different most important feature for 11 to 26
+  per cent of the samples. Sampling also took 134 seconds against 0.19.
+
+- **`__version__`**, the single source of the version. `to_config()` stamps
+  fits with it, and `setup.py` and `pyproject.toml` read it, so a release can no
+  longer ship fits labelled with the previous version. A test asserts that
+  every place the version appears agrees.
+
+- **`plot_size=(width, height)`** on all three plots: the size of the plot area
+  in inches. The figure is built around it, and text, markers and colour bars
+  scale with it, so enlarging a plot no longer shrinks everything in it. With
+  neither `plot_size` nor `figsize`, each plot now takes a fixed default plot
+  area (4.1 x 4.0 inches for the scatter, 4.0 x 3.9 for heatmaps, 8.7 x 3.9 for
+  profiles, the areas the old default canvases gave) and the figure grows to
+  fit long labels instead of squeezing the plot. `figsize` still fixes the
+  canvas, as before. Colour bars run the full height of the plot area; the
+  heatmap's was half height.
+
+- **`heatmap()` and `profile_plot()` serve text and graph fits.** Through
+  v0.8.1 they refused any fit that was not tabular. A text fit is now labelled
+  by its fitted vocabulary, and a graph fit by its node features plus topology
+  columns. The refusal used to protect against stale tabular names surviving a
+  text refit; every fit entry point has cleared that state since v0.8.0, and a
+  test fits text after tabular and asserts the labels are the text fit's terms.
+
+- **Verbose fits state what permutation sampling will cost** before starting
+  it: the number of coalition values, and, when it applies, that early stopping
+  cannot fire. `ShapleySignificanceEngine.earliest_early_stop()` returns the
+  smallest permutation count at which early stopping can end a run,
+  `max(50, 20 + 10 * patience)`. That is 120 at the default patience of 10, so
+  at the default `shapley_n_permutations=100` early stopping never fires and
+  every run uses all 100 permutations. This was always so; it is now stated.
+
+### Changed
+
+- **The stereotypical formative game now measures the same distance as the
+  stereotypical rank.** The actual rank scores a sample by its distance from
+  `tau`, the column maximum, minimum or numeric target. The formative game used
+  a different function for `'max'` and `'min'`: the excess over the median,
+  clipped at zero, which tied every sample on the far side of the median, so on
+  a symmetric column half the dataset shared a single formative value while the
+  actual rank separated all of them. Both halves of the stereotypical
+  perspective now use
+
+      v(S) = |median - tau| - mean over S of |y_i - tau|
+
+  **This changes numbers** for `stereotype_target='max'` or `'min'`. Numeric
+  targets are unchanged, because for them the two forms were already the same.
+  The stereotypical **explanation** weights still use the excess over the
+  median for `'max'` and `'min'`, as they always have.
+
+- **Importing `datatypical_viz` no longer changes matplotlib's global
+  `rcParams`.** Every size is set on the artists it applies to, so a caller can
+  restyle the plots, and other figures in the session are left alone.
+
+- **The plots follow one house style.** Ticks and legends at 12 points, axis
+  labels, colour-bar labels and titles at 14, nothing bold, legends without a
+  frame and outside the plot, labels written as names (no underscores, and
+  legend and colour-bar titles capitalised unless the name already carries a
+  capital, as in pH), and viridis throughout: two categories in viridis purple
+  (#440154) and green (#32b67a), and an uncoloured scatter in a viridis blue
+  rather than `steelblue`. The heatmap's axis labels were 12 points. Feature
+  names on the heatmap and profile stand upright when they fit, and turn on
+  end only when they would otherwise run into each other; they were always
+  turned, even two-character names with room to spare.
+
+- **The coverage convention is mechanical.** `tests/conftest.py` sets
+  `NUMBA_DISABLE_JIT=1` whenever coverage is measuring, so the published figure
+  cannot be measured the other way by accident. Compiled kernels run as
+  machine code and are invisible to the line tracer, which is why the same
+  suite reports less with the JIT on (95.8% for this release).
+
+### Removed
+
+- Three private value functions, `_v04_archetypal_value`,
+  `_v04_prototypical_value` and `_v04_stereotypical_value`, which nothing called
+  except tests. The archetypal one refitted an NMF per coalition, exactly the
+  path the cached value function replaced, so a reader landing on it would have
+  concluded the library still worked that way.
+- `_pairwise_euclidean_jit` and `_ensure_dtype`, also unused.
+- The unreachable statements listed under Known gaps for v0.8.0, and four more
+  defensive branches that no input can reach.
+
+### Not a defect
+
+- **Memory under `n_jobs=-1`.** Running four case-study fits at once on a
+  16 GB machine had exhausted its memory, with over a hundred worker processes
+  reported. A single fit does not do this. DataTypical parallelises with
+  joblib's threading backend only, so it starts no worker processes. Sampled
+  every 5 seconds through the three example notebooks with `n_jobs=-1`, CASP
+  included at 45,730 rows, the kernel started no child processes, peaked at 55
+  threads, and used at most 1.1 GB.
+
+### Tests
+
+- The suite has 914 tests, 100% statement coverage of both modules, measured
+  with `NUMBA_DISABLE_JIT=1` as above. Every compiled kernel is tested
+  against its NumPy twin, the whole fit is tested on both paths, and each exact
+  explanation is checked against exhaustive enumeration.
+- Each visualisation is tested on tabular, text and graph fits, and the house
+  style is measured rather than assumed: font sizes, weights, colours, legend
+  frames, and that no text overlaps the data, a legend or other text.
+
+### Benchmarks
+
+- Both benchmark experiments re-run with this release on 2026-10-22, on the
+  machine above. The structural-significance results reproduce the published
+  ones exactly, and the scaling study was re-timed; see
+  `benchmarks/README.md`. Their figures now follow the house style, as do
+  those of the three example notebooks, which were re-run with this release.
+
+---
+
 ## [0.8.1] - 2026-09-23
 
 A bug-fix release. The first entry makes archetypal analysis work again on a
@@ -396,12 +657,8 @@ deliberate exception recorded under `archetypal_method='aa'` below.
   other samples and `H_n` the nth harmonic number. A numeric `stereotype_target`
   adds a constant term. Verified against enumeration for all three target modes.
 
-  The **prototypical** game does not reduce: its value is a mean of per-member
-  maxima over the other members, so a coalition does not collapse to an order
-  statistic. It stays Monte Carlo, and the split-half diagnostic still applies
-  to it.
-
-  New public functions `exact_formative_archetypal(X, archetypes)` and
+  New public functions `exact_formative_archetypal(X, archetypes)`,
+  `exact_formative_prototypical(X)` and
   `exact_formative_stereotypical(target_values, target, median)`.
 
 - **`archetypal_method='auto'`**, the permissive cascade PCHA to ConvexHull to
@@ -418,11 +675,12 @@ deliberate exception recorded under `archetypal_method='aa'` below.
   nowhere, which is how the silent fallback went unnoticed.
 
 - **A pytest suite**, discoverable through `pytest.ini`, with `.coveragerc`
-  configured to measure broadly and filter at report time. 748 tests, 99.5%
-  statement coverage (`datatypical.py` 99.4%, `datatypical_viz.py` 100%),
-  measured with `NUMBA_DISABLE_JIT=1` so that the compiled kernels are visible
-  to the line tracer. With compilation active the same suite reports 94.4%,
-  because those kernels then execute as machine code and are not traced at all.
+  configured to measure broadly and filter at report time: 738 tests at
+  release. Measured on the v0.8.1 suite of 748, statement coverage is 99.5%
+  (`datatypical.py` 99.4%, `datatypical_viz.py` 100%) with `NUMBA_DISABLE_JIT=1`,
+  so that the compiled kernels are visible to the line tracer, and 94.4% with
+  compilation active, because those kernels then execute as machine code and
+  are not traced at all.
 
 - **Invariant tests** asserting the properties the ranks claim: exact row-order
   invariance, exact scale and offset invariance, agreement between

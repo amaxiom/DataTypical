@@ -1,5 +1,5 @@
 """
-DataTypical v0.8.1 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.8.2 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
@@ -12,6 +12,32 @@ Key Innovation:
 Two complementary perspectives:
 1. LOCAL: "This sample IS significant because features X, Y contribute most"
 2. GLOBAL: "This sample CREATES significance by defining the distribution and boundary"
+
+What's new in v0.8.2:
+- FIXED: `import datatypical` hung forever from a folder the user cannot write
+  to, such as a system-wide Anaconda site-packages on Windows. Numba's cache
+  check retried there up to 2**31 - 1 times. The cache folder is now tested
+  with one real write, and caching is turned off where it would fail.
+- FIXED: without a working Numba the compiled kernels ran as interpreted
+  loops, thousands of times slower, and NUMBA_AVAILABLE was read nowhere. It
+  now selects vectorised NumPy versions, and a missing Numba is reported.
+- NEW: explanation_method, default 'exact'. All three feature-level
+  explanation games have closed forms (two mean games and a variance game),
+  so explanations no longer depend on the seed and cost O(d) per sample.
+  New public functions exact_explanations_archetypal, _prototypical and
+  _stereotypical. 'monte_carlo' reproduces a pre-0.8.2 result.
+- CHANGED: for stereotype_target='max' or 'min' the stereotypical formative
+  game now measures distance to the column's extreme, as the actual rank does,
+  instead of the excess over the median, which tied every instance on the far
+  side of it. Numeric targets are unchanged.
+- FIXED: a Shapley fit with an ordered categorical stereotype_column raised.
+- FIXED: the formative_method error message called 'monte_carlo' the default.
+- NEW: __version__, the single source of the version.
+- REMOVED: three dead private value functions (_v04_*), a dead kernel
+  (_pairwise_euclidean_jit) and _ensure_dtype; only tests called them.
+- Visualisation: text fits are supported by heatmap() and profile_plot();
+  plot_size fixes the plot area and scales text, markers and colour bars;
+  wide data no longer renders blank; long sample labels are elided.
 
 What's new in v0.8.0 (bug fixes, plus the additions listed at the end):
 - FIXED: archetypal_method='aa' no longer substitutes another method silently.
@@ -100,6 +126,7 @@ from typing import Iterable, List, Optional, Dict, Tuple, Union, Callable
 import heapq
 import math
 import gc
+import os
 import warnings
 import hashlib    
 import numpy as np
@@ -111,34 +138,137 @@ from threadpoolctl import threadpool_limits
 from joblib import Parallel, delayed
 from sklearn.exceptions import ConvergenceWarning
 
+# The one place the version is written down. to_config() stamps every fitted
+# configuration with it and the packaging metadata reads it, so a release can
+# no longer ship fits labelled with the previous version. Before v0.8.2 it was
+# typed out separately in each place, with nothing keeping them in step.
+__version__ = "0.8.2"
+
+
+# ============================================================
+# Numba: compiled kernels, their cache, and the NumPy fallback
+# ============================================================
+#
+# v0.8.2. Through v0.8.1 this guard caught (ImportError, Exception), which is
+# just Exception, and said nothing. NUMBA_AVAILABLE was assigned and then read
+# nowhere, so when Numba was missing the kernels below, which are nested loops
+# written for a compiler, ran in the interpreter, thousands of times slower
+# (measured 1,060x at 200 points and 7,300x at 1,000). NUMBA_AVAILABLE now
+# selects between the compiled kernels and vectorised NumPy versions of the
+# same arithmetic, and a missing or broken Numba is reported once, at import.
+#
+# NUMBA_AVAILABLE means "the compiled kernels are in use". It is also False
+# under NUMBA_DISABLE_JIT=1, where Numba would otherwise run those loops
+# interpreted; the NumPy versions are far faster than that, and NUMBA_DISABLE_JIT
+# is the setting the coverage figure is measured under.
 try:
-    from numba import jit, prange
-    import numpy as np
-    
-    # Test if Numba actually works with the current NumPy
-    @jit(nopython=True)
-    def _test(x): return x
-    _test(np.array([1]))
-    
-    NUMBA_AVAILABLE = True
-except (ImportError, Exception): 
-    # This catches the "NumPy version too new" error too!
-    NUMBA_AVAILABLE = False
-    def jit(*args, **kwargs):
+    import numba
+    from numba import jit as _numba_jit, prange
+except ImportError as _numba_exc:
+    numba = None
+    _NUMBA_FAILURE = "numba could not be imported (%s)" % _numba_exc
+else:
+    _NUMBA_FAILURE = None
+    try:
+        # A Numba that imports can still be unable to compile, for example
+        # against a NumPy newer than it supports. Any exception from this one
+        # trivial compilation means the compiler cannot be used, so it is
+        # caught whole, and reported below rather than swallowed.
+        @_numba_jit(nopython=True)
+        def _numba_probe(x):
+            return x
+
+        _numba_probe(np.array([1]))
+    except Exception as _numba_exc:
+        _NUMBA_FAILURE = "numba is installed but cannot compile (%s: %s)" % (
+            type(_numba_exc).__name__, _numba_exc)
+
+_NUMBA_JIT_DISABLED = bool(numba is not None and numba.config.DISABLE_JIT)
+NUMBA_AVAILABLE = _NUMBA_FAILURE is None and not _NUMBA_JIT_DISABLED
+
+if _NUMBA_FAILURE is not None:
+    def _numba_jit(*args, **kwargs):
         return lambda f: f
+
     def prange(n):
         return range(n)
-        
+
+    warnings.warn(
+        "DataTypical is running without compiled kernels: %s. Vectorised NumPy "
+        "versions of the same arithmetic are used instead, so results are "
+        "unchanged, but large fits run slower by a small factor. Install a "
+        "Numba release that supports your NumPy to restore the compiled kernels."
+        % _NUMBA_FAILURE, RuntimeWarning, stacklevel=2)
+
+
+def _directory_accepts_writes(path: str) -> bool:
+    """
+    One real write attempt, abandoned on the first error.
+
+    v0.8.2: this exists because Numba's own test hangs. Numba checks a cache
+    folder with ``tempfile``, and on Windows ``os.access`` reports a folder
+    writable whenever its read-only attribute is clear, whatever its ACL says.
+    In a folder the user cannot write to, such as a system-wide Anaconda
+    ``site-packages``, CPython then reads each refused creation as a name
+    collision and tries another name, up to ``TMP_MAX`` (2**31 - 1) times.
+    Numba runs that test when a cached kernel is DECORATED, so through v0.8.1
+    ``import datatypical`` from such an install pinned a core and never
+    returned, with nothing printed. A single ``O_CREAT | O_EXCL`` open fails at
+    once instead.
+    """
+    probe = os.path.join(path, ".datatypical-write-probe-%d" % os.getpid())
+    try:
+        os.makedirs(path, exist_ok=True)
+        handle = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError:
+        return False
+    os.close(handle)
+    try:
+        os.remove(probe)
+    except OSError:
+        pass
+    return True
+
+
+def _jit_cache_is_safe() -> bool:
+    """
+    Whether Numba may cache the compiled kernels on disk.
+
+    Numba looks first at ``NUMBA_CACHE_DIR`` when the caller has set it, and
+    otherwise at the ``__pycache__`` folder beside this file. Whichever it would
+    use must accept a write, or caching is turned off: the kernels then compile
+    once per session, about a second and a half on the measuring machine,
+    instead of hanging the import. Nothing process-wide is changed, so other
+    packages' Numba caches are unaffected. To keep a cache for a read-only
+    install, set ``NUMBA_CACHE_DIR`` to a writable folder.
+    """
+    chosen = os.environ.get("NUMBA_CACHE_DIR")
+    if not chosen:
+        chosen = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "__pycache__")
+    return _directory_accepts_writes(chosen)
+
+
+JIT_CACHE_ENABLED = NUMBA_AVAILABLE and _jit_cache_is_safe()
+
+
+def jit(*args, **kwargs):
+    """``numba.jit``, caching to disk only where that cannot hang the import."""
+    if kwargs.get("cache"):
+        kwargs["cache"] = JIT_CACHE_ENABLED
+    return _numba_jit(*args, **kwargs)
+
+
 try:
     import scipy.sparse as sp
-except Exception:
+except ImportError:
     sp = None
 ArrayLike = Union[np.ndarray, "sp.spmatrix"]
 
 try:
     from scipy.spatial import ConvexHull
     from scipy.spatial.distance import cdist
-except Exception:
+except ImportError:
     ConvexHull = None
     cdist = None
 
@@ -269,6 +399,26 @@ def _stereotype_values_as_float(values: pd.Series, column: Optional[str] = None)
     )
 
 
+def _stereotype_tau(values: np.ndarray, target: Union[str, float]) -> float:
+    """
+    The value a stereotype column is ranked towards: its maximum, its minimum,
+    or the numeric target itself. NaN entries are ignored.
+
+    v0.8.2: the single definition shared by the actual rank and the formative
+    game, so the two halves of the stereotypical perspective agree on what
+    "towards the target" means for every way of specifying it.
+    """
+    if isinstance(target, str):
+        if target == "max":
+            return float(np.nanmax(values))
+        if target == "min":
+            return float(np.nanmin(values))
+        raise ConfigError(
+            f"stereotype_target must be 'min', 'max' or numeric, got {target!r}"
+        )
+    return float(target)
+
+
 # ============================================================
 # [B] Thread Control
 # ============================================================
@@ -298,10 +448,11 @@ class _ThreadControl:
 # ============================================================
 def _cleanup_memory(*arrays, force_gc: bool = False) -> None:
     """
-    Explicitly delete arrays and optionally force garbage collection.
-    
-    MEMORY OPTIMIZED: Python's GC doesn't always free memory immediately.
-    This forces cleanup of large temporaries to reduce peak memory usage.
+    Optionally force a garbage collection.
+
+    Deleting the names passed in frees nothing, because the caller still holds
+    its own references; only ``force_gc=True`` has an effect. The calls are kept
+    because they mark where large temporaries stop being needed.
     """
     for arr in arrays:
         if arr is not None:
@@ -349,67 +500,54 @@ def _chunk_len(n_left: int, n_right: int, bytes_per: int, max_memory_mb: int) ->
     return max(1, min(n_right, int(max_bytes // max(8, n_left * bytes_per))))
     
 
-def _ensure_dtype(X: np.ndarray, dtype: str = 'float32') -> np.ndarray:
-    """
-    Ensure array has specified dtype, converting if necessary.
-    
-    MEMORY OPTIMIZED: Default to float32 (4 bytes) instead of float64 (8 bytes).
-    """
-    target_dtype = np.float32 if dtype == 'float32' else np.float64
-    
-    if X.dtype != target_dtype:
-        return X.astype(target_dtype, copy=False)
-    return X
-
-
 def _euclidean_min_to_set_dense(
     X: np.ndarray, Y: np.ndarray, max_memory_mb: int = 2048
 ) -> np.ndarray:
     """
-    Compute minimum Euclidean distance from each row of X to any row in Y.
-    
-    OPTIMIZED: Uses Numba JIT for 2-3x speedup and better memory efficiency.
+    Minimum Euclidean distance from each row of X to any row of Y.
+
+    Small problems use one direct pass; large ones are chunked over Y so that
+    the working block stays inside ``max_memory_mb``. Each step runs the
+    compiled kernel when Numba is available and its NumPy equivalent when not.
     """
     n, d = X.shape
     m = Y.shape[0]
-    
-    # For small problems, use JIT-compiled direct computation
+
     if n * m < 100000:
-        return _euclidean_min_jit(X, Y)
-    
-    # For large problems, use chunked computation with JIT
+        return _euclidean_min_jit(X, Y) if NUMBA_AVAILABLE else _euclidean_min_np(X, Y)
+
     best = np.full(n, np.inf, dtype=np.float64)
     block = _chunk_len(n, m, bytes_per=8, max_memory_mb=max_memory_mb)
-    
-    # Pre-compute X squared norms once
     x2 = np.sum(X * X, axis=1)
-    
+    chunk = _euclidean_chunk_jit if NUMBA_AVAILABLE else _euclidean_chunk_np
     for s in range(0, m, block):
         e = min(m, s + block)
-        YY = Y[s:e]
-        
-        # Use JIT-compiled function for this chunk
-        chunk_dists = _euclidean_chunk_jit(X, YY, x2)
-        best = np.minimum(best, chunk_dists)
-    
+        best = np.minimum(best, chunk(X, Y[s:e], x2))
     return best
 
 
+# ---- compiled kernels ----
+# The compiled kernels are explicit loops written for Numba, and each has a
+# vectorised NumPy twin below computing the same arithmetic. Measured on the
+# development machine (Core Ultra 9 285K, Windows 11, Python 3.13, Numba 0.62,
+# 2026-10-22), ten dimensions: the compiled minimum-distance kernel is 1.6
+# times faster than its NumPy twin at 200 x 200 points, 11 times at 500 x 500,
+# 16 at 1,000 x 1,000 and 25 at 2,000 x 2,000, and the cosine kernel 1.6 to 4
+# times. Against the same loops run interpreted, which is what v0.8.1 fell
+# back to, compiled is 1,000 to 7,000 times faster. A whole fit spends little
+# time here: with the NumPy twins it ran within 4 per cent of the compiled one
+# at 1,000 to 10,000 samples.
+
 @jit(nopython=True, parallel=True, cache=True, fastmath=True)
 def _euclidean_min_jit(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
-    """
-    JIT-compiled minimum Euclidean distance computation.
-    
-    Uses parallel loops for multi-core acceleration.
-    """
+    """Minimum Euclidean distance from each row of X to Y, by direct differences."""
     n = X.shape[0]
     m = Y.shape[0]
     d = X.shape[1]
     
     min_dists = np.empty(n, dtype=np.float64)
     
-    # Parallel loop over X samples (explicit with prange)
-    for i in prange(n):  # Changed from range to prange
+    for i in prange(n):
         min_dist = np.inf
         
         for j in range(m):
@@ -433,9 +571,8 @@ def _euclidean_chunk_jit(
     x2: np.ndarray
 ) -> np.ndarray:
     """
-    JIT-compiled chunked distance computation using pre-computed norms.
-    
-    Computes: sqrt(||x||^2 + ||y||^2 - 2<x,y>) efficiently.
+    Minimum distance to one chunk of Y, from pre-computed squared norms:
+    sqrt(||x||^2 + ||y||^2 - 2<x,y>).
     """
     n = X.shape[0]
     m = Y_chunk.shape[0]
@@ -443,7 +580,6 @@ def _euclidean_chunk_jit(
     
     min_dists = np.empty(n, dtype=np.float64)
     
-    # Pre-compute Y chunk squared norms
     y2 = np.empty(m, dtype=np.float64)
     for j in range(m):
         y2_val = 0.0
@@ -451,17 +587,14 @@ def _euclidean_chunk_jit(
             y2_val += Y_chunk[j, k] * Y_chunk[j, k]
         y2[j] = y2_val
     
-    # Parallel loop over X samples
     for i in prange(n):
         min_dist_sq = np.inf
 
         for j in range(m):
-            # Compute dot product
             dot = 0.0
             for k in range(d):
                 dot += X[i, k] * Y_chunk[j, k]
             
-            # Distance squared using pre-computed norms
             dist_sq = x2[i] + y2[j] - 2.0 * dot
             
             if dist_sq < min_dist_sq:
@@ -471,40 +604,13 @@ def _euclidean_chunk_jit(
     
     return min_dists
 
-@jit(nopython=True, parallel=True, cache=True, fastmath=True)
-def _pairwise_euclidean_jit(X: np.ndarray) -> np.ndarray:
-    """
-    JIT-compiled pairwise Euclidean distance matrix.
-    
-    Returns upper triangle only to save memory.
-    """
-    n = X.shape[0]
-    d = X.shape[1]
-    
-    # Compute full distance matrix (symmetric)
-    dists = np.zeros((n, n), dtype=np.float64)
-    
-    # Parallel outer loop
-    for i in prange(n):
-        for j in range(i + 1, n):
-            dist_sq = 0.0
-            for k in range(d):
-                diff = X[i, k] - X[j, k]
-                dist_sq += diff * diff
-            
-            dist = np.sqrt(max(dist_sq, 0.0))
-            dists[i, j] = dist
-            dists[j, i] = dist  # Symmetric
-    
-    return dists
-
 
 @jit(nopython=True, parallel=True, cache=True, fastmath=True)
 def _cosine_similarity_jit(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
     """
-    JIT-compiled cosine similarity between L2-normalized vectors.
-    
-    For L2-normalized data, this is just the dot product.
+    Cosine similarity between L2-normalised rows, clipped at zero.
+
+    For L2-normalised data this is just the dot product.
     """
     n = X.shape[0]
     m = Y.shape[0]
@@ -512,14 +618,46 @@ def _cosine_similarity_jit(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
     
     sims = np.empty((n, m), dtype=np.float64)
     
-    # Parallel loop over X samples
     for i in prange(n):
         for j in range(m):
             dot = 0.0
             for k in range(d):
                 dot += X[i, k] * Y[j, k]
-            sims[i, j] = max(dot, 0.0)  # Clip negative similarities
+            sims[i, j] = max(dot, 0.0)
     
+    return sims
+
+
+# ---- NumPy equivalents, used when the compiled kernels are not ----
+
+def _euclidean_min_np(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
+    """NumPy version of _euclidean_min_jit: direct differences, via cdist."""
+    X = np.asarray(X, dtype=np.float64)
+    Y = np.asarray(Y, dtype=np.float64)
+    if Y.shape[0] == 0:
+        return np.full(X.shape[0], np.inf)
+    if cdist is not None:
+        d2 = cdist(X, Y, "sqeuclidean")
+    else:
+        d2 = ((X[:, None, :] - Y[None, :, :]) ** 2).sum(axis=2)
+    return np.sqrt(np.maximum(d2.min(axis=1), 0.0))
+
+
+def _euclidean_chunk_np(X: np.ndarray, Y_chunk: np.ndarray, x2: np.ndarray) -> np.ndarray:
+    """NumPy version of _euclidean_chunk_jit: the same squared-norm identity."""
+    X = np.asarray(X, dtype=np.float64)
+    Y_chunk = np.asarray(Y_chunk, dtype=np.float64)
+    if Y_chunk.shape[0] == 0:
+        return np.full(X.shape[0], np.inf)
+    y2 = np.sum(Y_chunk * Y_chunk, axis=1)
+    d2 = np.asarray(x2, dtype=np.float64)[:, None] + y2[None, :] - 2.0 * (X @ Y_chunk.T)
+    return np.sqrt(np.maximum(d2.min(axis=1), 0.0))
+
+
+def _cosine_similarity_np(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
+    """NumPy version of _cosine_similarity_jit."""
+    sims = np.asarray(X, dtype=np.float64) @ np.asarray(Y, dtype=np.float64).T
+    np.maximum(sims, 0.0, out=sims)
     return sims
 
 
@@ -604,7 +742,7 @@ class FacilityLocationSelector:
         last_gain[:] = g0
         last_eval[:] = 0
     
-        # heap items: (-gain_estimate, key, idx) -- ties broken by content key
+        # heap items: (-gain_estimate, key, idx); ties broken by content key
         heap = [(-float(g0[c]), int(keys[c]), int(c)) for c in range(n) if not forb[c]]
         heapq.heapify(heap)
     
@@ -745,6 +883,32 @@ def _compute_feature_marginals_jit(
         shapley_contrib[feat_idx] = marginal
     
     return shapley_contrib
+
+
+def _compute_marginals_np(perm, values, n_samples, n_features):
+    """NumPy version of _compute_marginals_jit."""
+    out = np.zeros((n_samples, n_features), dtype=np.float64)
+    out[np.asarray(perm)[:n_samples], :] = (np.diff(values)[:n_samples] / n_features)[:, None]
+    return out
+
+
+def _compute_feature_marginals_np(perm, values, n_features):
+    """NumPy version of _compute_feature_marginals_jit."""
+    out = np.zeros(n_features, dtype=np.float64)
+    out[np.asarray(perm)[:n_features]] = np.diff(values)[:n_features]
+    return out
+
+
+def _compute_marginals(perm, values, n_samples, n_features):
+    if NUMBA_AVAILABLE:
+        return _compute_marginals_jit(perm, values, n_samples, n_features)
+    return _compute_marginals_np(perm, values, n_samples, n_features)
+
+
+def _compute_feature_marginals(perm, values, n_features):
+    if NUMBA_AVAILABLE:
+        return _compute_feature_marginals_jit(perm, values, n_features)
+    return _compute_feature_marginals_np(perm, values, n_features)
     
 
 class ShapleySignificanceEngine:
@@ -772,7 +936,39 @@ class ShapleySignificanceEngine:
         self.early_stopping_tolerance = early_stopping_tolerance
         self.verbose = verbose
         self.rng = np.random.RandomState(random_state)
-        
+
+    # Permutations are drawn in batches of this size, and early stopping is
+    # only consulted between batches.
+    BATCH_SIZE = 10
+
+    def earliest_early_stop(self) -> int:
+        """
+        The smallest permutation count at which early stopping can end a run.
+
+        v0.8.2: worked out because it was never stated. The convergence check
+        runs once per batch of 10, records nothing before 20 permutations, and
+        must then see ``early_stopping_patience`` consecutive stable batches,
+        and a stop is honoured only from 50 permutations. So the earliest stop
+        is ``max(50, 20 + 10 * patience)``: 120 at the default patience of 10.
+        At the default ``shapley_n_permutations=100`` early stopping can never
+        fire, and every run uses all 100 permutations.
+        """
+        return max(50, 20 + self.BATCH_SIZE * max(int(self.early_stopping_patience), 0))
+
+    def _report_cost(self, label: str, n_samples: int, n_features: int,
+                     evaluations: int) -> None:
+        """Verbose only: what the sampling about to start will cost."""
+        if not self.verbose:
+            return
+        print(f"\n  Computing {label}...")
+        print(f"    Samples: {n_samples}, Features: {n_features}")
+        print(f"    Max permutations: {self.n_permutations}")
+        print(f"    Coalition values to compute, at most: {evaluations:,}")
+        earliest = self.earliest_early_stop()
+        if earliest > self.n_permutations:
+            print(f"    Early stopping cannot fire below {earliest} permutations, "
+                  f"so all {self.n_permutations} will run")
+
     def compute_shapley_values(
         self,
         X: np.ndarray,
@@ -787,17 +983,15 @@ class ShapleySignificanceEngine:
         MEMORY OPTIMIZED: Cleanup batch results immediately after accumulation.
         """
         n_samples, n_features = X.shape
-        
-        if self.verbose:
-            print(f"\n  Computing {value_function_name}...")
-            print(f"    Samples: {n_samples}, Features: {n_features}")
-            print(f"    Max permutations: {self.n_permutations}")
-        
+        # one coalition value per prefix of every permutation
+        self._report_cost(value_function_name, n_samples, n_features,
+                          self.n_permutations * n_samples)
+
         early_stop = ShapleyEarlyStopping(
             patience=self.early_stopping_patience,
             tolerance=self.early_stopping_tolerance
         )
-        
+
         shapley_sum = np.zeros((n_samples, n_features), dtype=np.float64)
         # v0.8.0: a second accumulator over every other permutation, so the
         # estimate can report its own reliability. Splitting the permutations
@@ -938,12 +1132,15 @@ class ShapleySignificanceEngine:
         OPTIMIZED: Uses threading backend for better memory sharing.
         """
         n_samples, n_features = X.shape
-        
-        if self.verbose:
-            print(f"\n  Computing feature-level {value_function_name}...")
-            print(f"    Samples: {n_samples}, Features: {n_features}")
-            print(f"    Max permutations: {self.n_permutations}")
-        
+        # v0.8.2: say what this costs before committing to it. Each sample
+        # walks every permutation through every feature prefix, so the work is
+        # samples x permutations x features value-function calls. On a corpus
+        # of 100 documents and 1,277 terms that is 12.8 million calls and about
+        # 25 minutes per significance type, which explanation_method='exact'
+        # replaces with a closed form.
+        self._report_cost(f"feature-level {value_function_name}", n_samples,
+                          n_features, n_samples * self.n_permutations * n_features)
+                
         early_stop = ShapleyEarlyStopping(
             patience=self.early_stopping_patience,
             tolerance=self.early_stopping_tolerance
@@ -1050,7 +1247,7 @@ class ShapleySignificanceEngine:
         prefix_fn = _PREFIX_VALUE_FUNCS.get(value_function)
         if prefix_fn is not None:
             values = prefix_fn(perm, X, context)
-            return _compute_marginals_jit(perm, values, n_samples, n_features)
+            return _compute_marginals(perm, values, n_samples, n_features)
 
         # Generic path: re-evaluate the value function on every prefix.
         # (can't JIT this part due to the Python callable)
@@ -1067,7 +1264,7 @@ class ShapleySignificanceEngine:
                 values[j+1] = value_function(X_subset, subset_indices)
 
         # Now use JIT-compiled function to compute marginal contributions
-        shapley_contrib = _compute_marginals_jit(perm, values, n_samples, n_features)
+        shapley_contrib = _compute_marginals(perm, values, n_samples, n_features)
 
         return shapley_contrib
 
@@ -1102,7 +1299,7 @@ class ShapleySignificanceEngine:
                 values[j+1] = value_function(X_sample_subset, np.array([sample_idx]))
         
         # Use JIT-compiled function to compute marginals
-        shapley_contrib = _compute_feature_marginals_jit(perm, values, n_features)
+        shapley_contrib = _compute_feature_marginals(perm, values, n_features)
         
         return shapley_contrib
 
@@ -1439,32 +1636,46 @@ def exact_formative_stereotypical(
     """
     Exact Shapley values for the stereotypical formative game, without sampling.
 
-    The value function is a plain mean over the coalition, which has a closed
-    form. For ``target='max'`` it is
+    The value function measures how much closer to the target ``tau`` a
+    coalition sits, on average, than the median does:
 
-        v(S) = (1/|S|) * sum over i in S of c_i,   c_i = max(0, v_i - median)
+        v(S) = |median - tau| - (1/|S|) * sum over i in S of |y_i - tau|
         v(empty) = 0
 
-    Every coalition size carries weight 1/n, the marginal at size 0 is c_i, and
-    at size s >= 1 it is (c_i - mbar_i)/(s + 1) in expectation, where mbar_i is
-    the mean of c over the other players. Summing over s gives
+    where ``tau`` is the column's maximum for ``target='max'``, its minimum for
+    ``'min'``, and the number itself for a numeric target. That is the distance
+    the actual ``stereotypical_rank`` is computed from, so both axes of the
+    stereotypical plot measure the same thing.
+
+    The second term is a plain mean game, which has a closed form. Every
+    coalition size carries weight 1/n, the marginal at size 0 is c_i, and at
+    size s >= 1 it is (c_i - mbar_i)/(s + 1) in expectation, where mbar_i is the
+    mean of c over the other players. Summing over s gives
 
         phi_i = (1/n) * [ c_i + (c_i - mbar_i) * (H_n - 1) ]
 
-    with H_n the nth harmonic number. ``'min'`` is the same with the sign of the
-    deviation flipped. A numeric target adds a constant on every non-empty
-    coalition, contributing A/n each, minus a mean game on the distances.
+    with H_n the nth harmonic number, here applied to c_i = |y_i - tau|. The
+    constant contributes |median - tau|/n to every player.
 
     Verified against exhaustive coalition enumeration for all three target
     modes, and the values satisfy efficiency exactly.
 
+    .. versionchanged:: 0.8.2
+       For ``'max'`` and ``'min'`` the game used to score the excess over the
+       median, ``max(0, y_i - median)``, while the actual rank scores the
+       distance to the column's extreme. Every instance on the far side of the
+       median then tied at zero, so the formative ranking was coarser than the
+       actual one and the two panels of the stereotypical plot disagreed for a
+       reason unrelated to the data. Numeric targets are unchanged.
+
     .. note::
 
-       The result is an **affine function of c_i**, so this ranking is a monotone
-       transform of the stereotype column and carries no information beyond it.
-       That is a property of the value function, not of this implementation: the
-       Monte Carlo estimate is a noisy version of the same thing. It means the
-       stereotypical dual-perspective plot has both axes driven by one column.
+       The result is an **affine function of |y_i - tau|**, so this ranking is a
+       monotone transform of the stereotype column and carries no information
+       beyond it. That is a property of the value function, not of this
+       implementation: the Monte Carlo estimate is a noisy version of the same
+       thing. It means the stereotypical dual-perspective plot has both axes
+       driven by one column.
 
     Parameters
     ----------
@@ -1486,26 +1697,201 @@ def exact_formative_stereotypical(
         return np.zeros(0, dtype=np.float64)
     if median is None:
         median = float(np.median(values))
+    tau = _stereotype_tau(values, target)
+    return abs(median - tau) / n_samples - _mean_game_shapley(np.abs(values - tau))
 
-    def _mean_game(c: np.ndarray) -> np.ndarray:
-        if n_samples == 1:
-            return c.copy()
-        harmonic = float(np.sum(1.0 / np.arange(1, n_samples + 1)))
-        others_mean = (float(c.sum()) - c) / (n_samples - 1)
-        return (c + (c - others_mean) * (harmonic - 1.0)) / n_samples
 
+def _mean_game_shapley(c: np.ndarray) -> np.ndarray:
+    """
+    Exact Shapley values of the mean game v(S) = (1/|S|) sum over S of c_i.
+
+    phi_i = (1/n) * [c_i + (c_i - mbar_i) * (H_n - 1)], with mbar_i the mean of
+    c over the other players and H_n the nth harmonic number.
+    """
+    c = np.asarray(c, dtype=np.float64)
+    n = c.size
+    if n == 0:
+        return np.zeros(0, dtype=np.float64)
+    if n == 1:
+        return c.copy()
+    harmonic = float(np.sum(1.0 / np.arange(1, n + 1)))
+    others_mean = (float(c.sum()) - c) / (n - 1)
+    return (c + (c - others_mean) * (harmonic - 1.0)) / n
+
+
+def _scaled_mean_game_rows(C: np.ndarray, scale: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    Row-wise exact Shapley values of the mean game over the columns of C,
+    v_r(F) = scale_r * (1/|F|) sum over f in F of C[r, f].
+    """
+    C = np.asarray(C, dtype=np.float64)
+    m, d = C.shape
+    if d == 0:
+        return np.zeros((m, 0), dtype=np.float64)
+    if d == 1:
+        phi = C.copy()
+    else:
+        harmonic = float(np.sum(1.0 / np.arange(1, d + 1)))
+        others_mean = (C.sum(axis=1, keepdims=True) - C) / (d - 1)
+        phi = (C + (C - others_mean) * (harmonic - 1.0)) / d
+    if scale is not None:
+        phi = phi * np.asarray(scale, dtype=np.float64).reshape(-1, 1)
+    return phi
+
+
+def exact_explanations_archetypal(X: np.ndarray) -> np.ndarray:
+    """
+    Exact Shapley values for the archetypal explanation game, without sampling.
+
+    For one sample x, scaled to [0, 1], over a coalition F of its features,
+
+        v(F) = (1/|F|) * sum over f in F of a_f,   a_f = 1 - 2 * min(x_f, 1 - x_f),
+
+    the mean over F of how close each value sits to a bound of its feature.
+    That is a mean game, so (as for the stereotypical formative game)
+
+        phi_f = (1/d) * [ a_f + (a_f - abar_f) * (H_d - 1) ]
+
+    with abar_f the mean of a over the other features and H_d the dth harmonic
+    number. O(d) per sample, against O(M d^2) value-function work for M sampled
+    permutations, and verified against exhaustive enumeration.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Scaled samples, shape (n_samples, n_features); one row per sample.
+
+    Returns
+    -------
+    np.ndarray
+        Exact Shapley values, shape (n_samples, n_features).
+    """
+    X = np.atleast_2d(np.asarray(X, dtype=np.float64))
+    return _scaled_mean_game_rows(1.0 - 2.0 * np.minimum(X, 1.0 - X))
+
+
+def exact_explanations_prototypical(X: np.ndarray) -> np.ndarray:
+    """
+    Exact Shapley values for the prototypical explanation game, without sampling.
+
+    For one sample x over a coalition F of its features the value is the
+    population variance of its values there, v(F) = var over f in F of x_f, so
+    v of a single feature is 0. Write it as
+
+        v(F) = (1/|F|) sum_F x_f^2  -  (1/|F|^2) sum_F x_f^2
+               -  (2/|F|^2) sum over pairs {f, g} in F of x_f x_g.
+
+    The first term is a mean game. The other two are weighted sums of games
+    1[A subset of F] g(|F|) with |A| = 1 and |A| = 2, whose Shapley values
+    depend only on whether a feature is in A, so
+
+        phi_i = mean-game(x^2)_i  -  c1_in q_i  -  c1_out (Q - q_i)
+                -  c2_in x_i (T - x_i)  -  c2_out (P - x_i (T - x_i))
+
+    with q = x^2, Q = sum q, T = sum x, P = (T^2 - Q)/2 the sum over all pairs,
+    and four coefficients that depend on d alone. O(d) per sample, verified
+    against exhaustive enumeration, and efficient: the values sum to var(x).
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Scaled samples, shape (n_samples, n_features); one row per sample.
+
+    Returns
+    -------
+    np.ndarray
+        Exact Shapley values, shape (n_samples, n_features).
+    """
+    X = np.atleast_2d(np.asarray(X, dtype=np.float64))
+    m, d = X.shape
+    if d < 2:
+        return np.zeros((m, d), dtype=np.float64)
+    sizes = np.arange(1, d, dtype=np.float64)              # |S| = 1 .. d-1
+
+    def g(k):
+        return 1.0 / (k * k)
+
+    c1_in = float(np.sum(g(np.arange(1, d + 1, dtype=np.float64)))) / d
+    c1_out = float(np.sum(sizes / (d * (d - 1.0)) * (g(sizes + 1) - g(sizes))))
+    c2_in = float(np.sum(sizes / (d * (d - 1.0)) * 2.0 * g(sizes + 1)))
+    c2_out = 0.0
+    if d > 2:
+        s2 = np.arange(2, d, dtype=np.float64)
+        c2_out = float(np.sum(s2 * (s2 - 1.0) / (d * (d - 1.0) * (d - 2.0))
+                              * 2.0 * (g(s2 + 1) - g(s2))))
+
+    q = X * X
+    Q = q.sum(axis=1, keepdims=True)
+    T = X.sum(axis=1, keepdims=True)
+    with_i = X * (T - X)
+    pairs_all = 0.5 * (T * T - Q)
+    return (_scaled_mean_game_rows(q)
+            - (q * c1_in + (Q - q) * c1_out)
+            - (c2_in * with_i + c2_out * (pairs_all - with_i)))
+
+
+def _stereotypical_explanation_weights(target_values: np.ndarray,
+                                       target: Union[str, float]) -> np.ndarray:
+    """
+    The per-sample multiplier of the stereotypical explanation game.
+
+    ``'max'`` and ``'min'`` weight a sample by its excess over the column median
+    in the target direction, clipped at zero; a numeric target weights it by
+    minus its distance from the target. This is the form the explanations have
+    always used. Note that for ``'max'`` and ``'min'`` it is not the distance
+    the actual rank and the formative game use (see exact_formative_stereotypical).
+    """
+    values = np.asarray(target_values, dtype=np.float64).ravel()
     if isinstance(target, str):
+        median = float(np.median(values))
         if target == "max":
-            return _mean_game(np.maximum(values - median, 0.0))
+            return np.maximum(values - median, 0.0)
         if target == "min":
-            return _mean_game(np.maximum(median - values, 0.0))
+            return np.maximum(median - values, 0.0)
         raise ConfigError(
-            f"target must be 'min', 'max' or numeric, got {target!r}"
+            f"stereotype_target must be 'min', 'max' or numeric, got {target!r}"
         )
+    return -np.abs(values - float(target))
 
-    numeric_target = float(target)
-    constant = abs(median - numeric_target)
-    return constant / n_samples - _mean_game(np.abs(values - numeric_target))
+
+def exact_explanations_stereotypical(
+    X: np.ndarray,
+    target_values: np.ndarray,
+    target: Union[str, float],
+) -> np.ndarray:
+    """
+    Exact Shapley values for the stereotypical explanation game, without sampling.
+
+    For sample r over a coalition F of its features,
+
+        v_r(F) = w_r * (1/|F|) * sum over f in F of |x_rf|,
+
+    a mean game scaled by the sample's weight w_r: minus its distance from a
+    numeric target, or its excess over the median in the direction of ``'max'``
+    or ``'min'``, clipped at zero. The closed form is w_r times the mean-game
+    solution on |x_r|. O(d) per sample.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Scaled samples, shape (n_samples, n_features).
+    target_values : np.ndarray
+        The stereotype column for the same samples, one value each.
+    target : str or float
+        ``'max'``, ``'min'`` or a numeric target.
+
+    Returns
+    -------
+    np.ndarray
+        Exact Shapley values, shape (n_samples, n_features).
+    """
+    X = np.atleast_2d(np.asarray(X, dtype=np.float64))
+    weights = _stereotypical_explanation_weights(target_values, target)
+    if weights.size != X.shape[0]:
+        raise ValueError(
+            f"target_values has {weights.size} entries for {X.shape[0]} samples."
+        )
+    return _scaled_mean_game_rows(np.abs(X), weights)
 
 
 def formative_archetypal_pcha_cached(
@@ -1581,15 +1967,10 @@ def formative_prototypical_coverage(
     norms[norms == 0.0] = 1.0
     X_l2 = X_subset / norms
     
-    # Pairwise cosine similarities
+    # Pairwise cosine similarities; at least two rows, so never empty
     similarities = X_l2 @ X_l2.T
     np.fill_diagonal(similarities, 0)
-    
-    if similarities.size == 0:
-        return 0.0
-    
-    max_sims = np.max(similarities, axis=1) if similarities.shape[0] > 0 else np.array([0.0])
-    return float(np.mean(max_sims))
+    return float(np.mean(np.max(similarities, axis=1)))
 
 
 def formative_stereotypical_extremeness(
@@ -1598,33 +1979,27 @@ def formative_stereotypical_extremeness(
     context: Dict
 ) -> float:
     """
-    Stereotypical formative value function: Extremeness from median.
-    
-    Samples that pull the distribution toward the target are formative stereotypes.
+    Stereotypical formative value function: how much closer to the target the
+    coalition sits, on average, than the median does.
+
+        v(S) = |median - tau| - mean over S of |y_i - tau|
+
+    with ``tau`` the column maximum, minimum or numeric target, exactly as the
+    actual stereotypical rank resolves it. Changed in v0.8.2 for 'max' and
+    'min', which used to score the excess over the median instead; see
+    ``exact_formative_stereotypical``.
     """
     if len(X_subset) == 0:
         return 0.0
-    
+
     target_values = context['target_values']
-    target = context['target']
     median = context.get('median', np.median(target_values))
-    
+    tau = context.get('tau')
+    if tau is None:
+        tau = _stereotype_tau(target_values, context['target'])
+
     subset_vals = target_values[indices]
-    
-    if target == 'max':
-        # How far above median?
-        extremeness = np.mean(np.maximum(subset_vals - median, 0))
-    elif target == 'min':
-        # How far below median?
-        extremeness = np.mean(np.maximum(median - subset_vals, 0))
-    else:
-        # How much closer to target than median?
-        target_val = float(target)
-        median_dist = abs(median - target_val)
-        subset_dist = np.mean(np.abs(subset_vals - target_val))
-        extremeness = median_dist - subset_dist
-    
-    return float(extremeness)
+    return float(abs(median - tau) - np.mean(np.abs(subset_vals - tau)))
 
 
 # ============================================================
@@ -1635,7 +2010,7 @@ def formative_stereotypical_extremeness(
 # 1, 2, ..., n and needs the value-function result at every prefix. The
 # generic path (ShapleySignificanceEngine._process_single_permutation)
 # re-evaluates the value function from scratch on each prefix, costing
-# O(n) full evaluations per permutation -- i.e. O(M * n^2) (or worse)
+# O(n) full evaluations per permutation, i.e. O(M * n^2) (or worse)
 # overall, which is the dominant cost of publication-mode fits.
 #
 # All three formative value functions are decomposable along a growing
@@ -1717,10 +2092,51 @@ def _prefix_prototypical_kernel(perm, X_l2):
     return values
 
 
+def _prefix_archetypal_np(perm, X, archetypes):
+    """NumPy version of _prefix_archetypal_kernel."""
+    n = X.shape[0]
+    values = np.zeros(n + 1, dtype=np.float64)
+    if n == 0:
+        return values
+    diffs = X[perm][:, None, :] - archetypes[None, :, :]
+    dists = np.sqrt((diffs * diffs).sum(axis=2))              # (n, k)
+    running = np.minimum.accumulate(dists, axis=0)
+    values[1:] = -running.mean(axis=1)
+    return values
+
+
+def _prefix_cummean_np(perm, terms):
+    """NumPy version of _prefix_cummean_kernel."""
+    n = terms.shape[0]
+    values = np.zeros(n + 1, dtype=np.float64)
+    values[1:] = np.cumsum(terms[perm]) / np.arange(1, n + 1)
+    return values
+
+
+def _prefix_prototypical_np(perm, X_l2):
+    """
+    NumPy version of _prefix_prototypical_kernel. One vectorised step per
+    coalition size, so n Python-level iterations rather than n^2 d.
+    """
+    n = X_l2.shape[0]
+    values = np.zeros(n + 1, dtype=np.float64)
+    Z = X_l2[perm]
+    best = np.zeros(n, dtype=np.float64)
+    for j in range(1, n):
+        s = Z[:j] @ Z[j]
+        np.maximum(best[:j], s, out=best[:j])
+        best[j] = max(0.0, float(s.max()))
+        values[j + 1] = best[:j + 1].sum() / (j + 1)
+    return values
+
+
 def _prefix_values_archetypal(perm, X, context):
     archetypes = np.ascontiguousarray(context['archetypes'], dtype=np.float64)
     X = np.ascontiguousarray(X, dtype=np.float64)
-    return _prefix_archetypal_kernel(perm.astype(np.int64), X, archetypes)
+    perm64 = perm.astype(np.int64)
+    if NUMBA_AVAILABLE:
+        return _prefix_archetypal_kernel(perm64, X, archetypes)
+    return _prefix_archetypal_np(perm64, X, archetypes)
 
 
 def _prefix_values_prototypical(perm, X, context=None):
@@ -1728,29 +2144,28 @@ def _prefix_values_prototypical(perm, X, context=None):
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     norms[norms == 0.0] = 1.0
     X_l2 = np.ascontiguousarray(X / norms, dtype=np.float64)
-    return _prefix_prototypical_kernel(perm.astype(np.int64), X_l2)
+    perm64 = perm.astype(np.int64)
+    if NUMBA_AVAILABLE:
+        return _prefix_prototypical_kernel(perm64, X_l2)
+    return _prefix_prototypical_np(perm64, X_l2)
+
+
+def _prefix_cummean(perm64, terms):
+    if NUMBA_AVAILABLE:
+        return _prefix_cummean_kernel(perm64, terms)
+    return _prefix_cummean_np(perm64, terms)
 
 
 def _prefix_values_stereotypical(perm, X, context):
     target_values = np.asarray(context['target_values'], dtype=np.float64)
-    target = context['target']
     median = context.get('median', float(np.median(target_values)))
-    perm64 = perm.astype(np.int64)
-
-    if target == 'max':
-        terms = np.maximum(target_values - median, 0.0)
-        return _prefix_cummean_kernel(perm64, terms)
-    elif target == 'min':
-        terms = np.maximum(median - target_values, 0.0)
-        return _prefix_cummean_kernel(perm64, terms)
-    else:
-        target_val = float(target)
-        median_dist = abs(median - target_val)
-        terms = np.abs(target_values - target_val)
-        cummean = _prefix_cummean_kernel(perm64, terms)
-        values = median_dist - cummean
-        values[0] = 0.0   # empty coalition baseline (matches generic path)
-        return values
+    tau = context.get('tau')
+    if tau is None:
+        tau = _stereotype_tau(target_values, context['target'])
+    cummean = _prefix_cummean(perm.astype(np.int64), np.abs(target_values - tau))
+    values = abs(median - tau) - cummean
+    values[0] = 0.0   # empty coalition baseline (matches the generic path)
+    return values
 
 
 # Registry consulted by ShapleySignificanceEngine._process_single_permutation.
@@ -1789,7 +2204,7 @@ class DataTypical:
 
     # ---- Stereotype Configuration (NEW in v0.4) ----
     # NOTE (v0.8.0): stereotypical_rank is a deterministic, monotone function of
-    # stereotype_column alone -- see Methods 2.3.1, eq. 26:
+    # stereotype_column alone (see Methods 2.3.1, eq. 26):
     #     s_stereo_i = 1 - |y_i - tau| / max_j |y_j - tau|
     # It carries no information beyond the distance from the target on that one
     # column. Placing an outcome-derived quantity in stereotype_column and then
@@ -1829,6 +2244,14 @@ class DataTypical:
     # and the sampled ranking correlates 0.40 to 0.55 with the exact answer.
     # Pass formative_method='monte_carlo' to reproduce a pre-0.8.0 result.
     formative_method: str = "exact"
+    # v0.8.2: how the feature-level explanations are computed, on the same two
+    # settings. All three explanation games have closed forms: the archetypal
+    # and stereotypical ones are mean games over the features and the
+    # prototypical one is a variance game, so each sample costs O(d) instead of
+    # O(M d^2) value-function work. On a 100-document corpus with 1,277 terms
+    # the sampled explanations took about 25 minutes per significance type.
+    # Pass explanation_method='monte_carlo' to reproduce a pre-0.8.2 result.
+    explanation_method: str = "exact"
 
     # ---- Performance Mode (NEW in v0.7) ----
     fast_mode: bool = False
@@ -1873,6 +2296,9 @@ class DataTypical:
 
     # NEW in v0.4: Stereotype artifacts
     _df_original_fit: Optional[pd.DataFrame] = field(default=None, init=False)
+    # v0.8.2: the scaled term matrix of a text fit, kept (sparse) so that
+    # profile_plot can colour a document's bars by its own term weights.
+    _text_scaled_fit_: Optional["sp.spmatrix"] = field(default=None, init=False)
     label_df_: Optional[pd.DataFrame] = field(default=None, init=False)
     text_metadata_: Optional[pd.DataFrame] = field(default=None, init=False)
     stereotype_keyword_scores_: Optional[np.ndarray] = field(default=None, init=False)
@@ -2008,6 +2434,7 @@ class DataTypical:
         self.dropped_columns_ = []
         self.missingness_ = {}
         self._df_original_fit = None
+        self._text_scaled_fit_ = None
         self.label_df_ = None
         self.text_metadata_ = None
         self.stereotype_keyword_scores_ = None
@@ -2102,12 +2529,27 @@ class DataTypical:
                 "value here and then ignored it."
             )
 
-        if self.formative_method not in ("monte_carlo", "exact"):
-            raise ConfigError(
-                f"formative_method={self.formative_method!r} is not recognised. "
-                "Use 'monte_carlo' for permutation sampling, the default, or "
-                "'exact' for the closed-form archetypal formative values."
-            )
+        # v0.8.2: the formative_method message used to call 'monte_carlo' the
+        # default when the default is 'exact', which told a reader their fits
+        # had been sampled when they were exact. The default is now read from
+        # the field itself, so the message cannot drift from it again.
+        for _name, _what in (
+            ("formative_method", "formative values"),
+            ("explanation_method", "feature-level explanations"),
+        ):
+            _value = getattr(self, _name)
+            if _value not in ("monte_carlo", "exact"):
+                _default = type(self).__dataclass_fields__[_name].default
+                _other = "monte_carlo" if _default == "exact" else "exact"
+                _describe = {
+                    "exact": "closed-form, unsampled",
+                    "monte_carlo": "permutation-sampled",
+                }
+                raise ConfigError(
+                    f"{_name}={_value!r} is not recognised. Use {_default!r}, "
+                    f"the default, for {_describe[_default]} {_what}, or "
+                    f"{_other!r} for {_describe[_other]} ones."
+                )
 
         _implemented = {
             "scale": ("minmax", "MinMax scaling to [0, 1]"),
@@ -2702,11 +3144,16 @@ class DataTypical:
 
                 if run_stereo_shap and self.stereotype_column is not None \
                         and getattr(self, '_stereotype_source_fit_', None) is not None:
-                    target_values = self._stereotype_source_fit_.to_numpy(dtype=np.float64)
+                    # v0.8.2: through the same conversion the actual rank uses.
+                    # A plain to_numpy(dtype=float64) raised on the ordered
+                    # categoricals that fit() has accepted since v0.8.0.
+                    target_values = _stereotype_values_as_float(
+                        self._stereotype_source_fit_, self.stereotype_column)
                     context = {
                         'target_values': target_values,
                         'target': self.stereotype_target,
-                        'median': np.median(target_values)
+                        'median': np.median(target_values),
+                        'tau': _stereotype_tau(target_values, self.stereotype_target),
                     }
                     if self.formative_method == "exact":
                         _exact = exact_formative_stereotypical(
@@ -2778,265 +3225,129 @@ class DataTypical:
         subsample_indices: Optional[np.ndarray] = None
     ) -> None:
         """
-        Compute Shapley explanations with optional subsampling.
-        
-        OPTIMIZED: Two-tier permutation strategy for union samples.
+        Feature-level Shapley explanations, for every sample or for the union
+        of the top samples chosen by ``shapley_top_n``.
+
+        ``explanation_method='exact'`` (the default from v0.8.2) evaluates the
+        closed forms. ``'monte_carlo'`` samples feature permutations, with the
+        two-tier strategy: samples in the top list of two or more significance
+        types get the full permutation count, the rest half of it.
         """
-        
         n_samples, n_features = X_dense.shape
-        
-        # Determine which samples to compute for
-        if subsample_indices is not None:
-            samples_to_compute = subsample_indices
-            
-            # OPTIMIZATION: Two-tier permutation strategy
-            # If we have union samples, use full permutations only for "core" samples
-            # Core = samples that appear in multiple metric top-N lists
-            if hasattr(self, '_union_core_samples'):
-                core_samples = self._union_core_samples
-                secondary_samples = np.setdiff1d(samples_to_compute, core_samples)
-                
-                if self.verbose and len(secondary_samples) > 0:
-                    print(f"    Two-tier permutation strategy:")
-                    print(f"      Core samples ({len(core_samples)}): {engine.n_permutations} permutations")
-                    print(f"      Secondary samples ({len(secondary_samples)}): {engine.n_permutations // 2} permutations")
-            else:
-                core_samples = samples_to_compute
-                secondary_samples = np.array([])
-        else:
-            samples_to_compute = np.arange(n_samples)
-            core_samples = samples_to_compute
-            secondary_samples = np.array([])
-        
+        samples_to_compute = (np.asarray(subsample_indices, dtype=np.intp)
+                              if subsample_indices is not None
+                              else np.arange(n_samples))
+
         run_arch_exp  = self.selected_significance is None or self.selected_significance == "archetypal"
         run_proto_exp = self.selected_significance is None or self.selected_significance == "prototypical"
-        run_stereo_exp = self.selected_significance is None or self.selected_significance == "stereotypical"
+        run_stereo_exp = (self.selected_significance is None or self.selected_significance == "stereotypical") \
+            and self.stereotype_column is not None
 
-        # Initialize full-size arrays only for selected significance types
+        # Full-size arrays for the selected types. Rows outside the subsample
+        # stay zero, which is what get_shapley_explanations has always returned
+        # for them. v0.8.2: the stereotypical array is None whenever there is no
+        # stereotype_column; under shapley_top_n subsampling it used to be left
+        # as an all-zero array, which the plots then drew as real explanations.
         self.Phi_archetypal_explanations_ = np.zeros((n_samples, n_features), dtype=np.float64) if run_arch_exp else None
         self.Phi_prototypical_explanations_ = np.zeros((n_samples, n_features), dtype=np.float64) if run_proto_exp else None
         self.Phi_stereotypical_explanations_ = np.zeros((n_samples, n_features), dtype=np.float64) if run_stereo_exp else None
-        
-        # Value functions for explanations
-        def explain_archetypal_features(X_subset, indices, ctx):
-            """Archetypal score for single sample with feature subset."""
-            if len(X_subset) == 0 or X_subset.shape[1] == 0:
-                return 0.0
-            dist_to_boundary = np.minimum(X_subset, 1.0 - X_subset)
-            archetypal_contribution = np.mean(1.0 - 2.0 * dist_to_boundary, axis=1)
-            return float(np.mean(archetypal_contribution))
-        
-        def explain_prototypical_features(X_subset, indices, ctx):
-            """Prototypical score for single sample with feature subset."""
-            if len(X_subset) == 0 or X_subset.shape[1] == 0:
-                return 0.0
-            return float(np.mean(np.var(X_subset, axis=1)))
-        
-        context = {'sample_mode': 'features'}
 
-        # Pre-extract full target array so per-tier subsets can be sliced correctly.
-        # Value functions receive LOCAL indices (0..len(X_subset)-1), so target_values
-        # must be sized to match the X subset passed to compute_feature_shapley_values.
-        _full_target_values: Optional[np.ndarray] = None
-        if run_stereo_exp and self.stereotype_column is not None \
-                and getattr(self, '_stereotype_source_fit_', None) is not None:
+        # Per-sample multiplier of the stereotypical explanation game, over the
+        # full training set so it can be sliced to any subset of rows. Every fit
+        # path stores the stereotype source before Shapley runs whenever
+        # stereotype_column is set, and run_stereo_exp requires that it is.
+        _stereo_weights: Optional[np.ndarray] = None
+        if run_stereo_exp:
             _full_target_values = _stereotype_values_as_float(
-                self._stereotype_source_fit_, self.stereotype_column
-            )
+                self._stereotype_source_fit_, self.stereotype_column)
+            _stereo_weights = _stereotypical_explanation_weights(
+                _full_target_values, self.stereotype_target)
 
-        # v0.8.0 FIX: this closure and its context entries are defined at function
-        # scope, not inside the core-samples branch. When subsample_indices is
-        # supplied, core_samples comes from self._union_core_samples and can be
-        # empty while secondary_samples is not; the secondary branch calls this
-        # closure too, which previously raised UnboundLocalError.
+        if self.explanation_method == "exact":
+            rows = samples_to_compute
+            X_rows = X_dense[rows]
+            if self.verbose:
+                print(f"  Exact explanations for {len(rows)} samples x {n_features} features, no sampling")
+            exact_info = {
+                'method': 'exact',
+                'n_permutations_used': 0,
+                'converged': True,
+                'mean_rel_change': 0.0,
+                'additivity_error': 0.0,
+            }
+            if run_arch_exp:
+                self.Phi_archetypal_explanations_[rows] = exact_explanations_archetypal(X_rows)
+                self.shapley_info_['archetypal_explanations'] = dict(exact_info)
+            if run_proto_exp:
+                self.Phi_prototypical_explanations_[rows] = exact_explanations_prototypical(X_rows)
+                self.shapley_info_['prototypical_explanations'] = dict(exact_info)
+            if run_stereo_exp:
+                self.Phi_stereotypical_explanations_[rows] = _scaled_mean_game_rows(
+                    np.abs(X_rows), _stereo_weights[rows])
+                self.shapley_info_['stereotypical_explanations'] = dict(exact_info)
+            return
+
+        # ---- Monte Carlo (the pre-0.8.2 behaviour) ----
+        if subsample_indices is not None and hasattr(self, '_union_core_samples'):
+            # Core = samples in the top list of two or more significance types.
+            core_samples = self._union_core_samples
+            secondary_samples = np.setdiff1d(samples_to_compute, core_samples)
+            if self.verbose and len(secondary_samples) > 0:
+                print(f"    Two-tier permutation strategy:")
+                print(f"      Core samples ({len(core_samples)}): {engine.n_permutations} permutations")
+                print(f"      Secondary samples ({len(secondary_samples)}): {max(10, engine.n_permutations // 2)} permutations")
+        else:
+            core_samples = samples_to_compute
+            secondary_samples = np.array([], dtype=np.intp)
+
+        def explain_archetypal_features(X_subset, indices, ctx):
+            """Mean over the coalition's features of 1 - 2 * distance to the nearer bound."""
+            return float(np.mean(1.0 - 2.0 * np.minimum(X_subset, 1.0 - X_subset)))
+
+        def explain_prototypical_features(X_subset, indices, ctx):
+            """Variance of the sample's values over the coalition's features."""
+            return float(np.mean(np.var(X_subset, axis=1)))
+
+        # v0.8.0 FIX: defined at function scope, not inside the core-samples
+        # branch, because the secondary branch calls it too and core_samples can
+        # be empty while secondary_samples is not (UnboundLocalError before).
+        # Value functions receive LOCAL indices, so ctx['weights'] is sliced to
+        # the rows being computed before each call below.
         def explain_stereotypical_features(X_subset, indices, ctx):
-            if len(X_subset) == 0 or X_subset.shape[1] == 0:
-                return 0.0
-            if ctx.get('target_values') is None:
-                return 0.0
+            """The sample's stereotypical weight times its mean |value| over the coalition."""
+            return float(ctx['weights'][indices[0]] * np.mean(np.abs(X_subset)))
 
-            sample_idx = indices[0]
-            target_value = ctx['target_values'][sample_idx]
-            target = ctx['stereotype_target']
+        context = {'sample_mode': 'features', 'weights': None}
 
-            if isinstance(target, str):
-                median = ctx.get('median', np.median(ctx['target_values']))
-                if target == 'max':
-                    distance = max(0, target_value - median)
-                elif target == 'min':
-                    distance = max(0, median - target_value)
-                else:
-                    distance = 0.0
-            else:
-                distance = -abs(target_value - target)
-
-            feature_contrib = float(np.mean(np.abs(X_subset)))
-            return distance * feature_contrib
-
-        if run_stereo_exp and self.stereotype_column is not None:
-            context['stereotype_target'] = self.stereotype_target
-            context['median'] = np.median(_full_target_values) if _full_target_values is not None else 0.0
-
-        # COMPUTE CORE SAMPLES (full permutations)
-        if len(core_samples) > 0:
-            if self.verbose:
-                print(f"  Computing explanations for significance rankings...")
-
-            X_core = X_dense[core_samples, :]
-
-            if run_arch_exp:
-                Phi_arch_core, info_arch = engine.compute_feature_shapley_values(
-                    X_core,
-                    explain_archetypal_features,
-                    "Archetypal Explanations (Core)",
-                    context
-                )
-                self.Phi_archetypal_explanations_[core_samples, :] = Phi_arch_core
-                self.shapley_info_['archetypal_explanations'] = info_arch
-
-            if run_proto_exp:
-                if self.verbose:
-                    print(f"  Computing prototypical explanations (core: {len(core_samples)} samples)...")
-
-                Phi_proto_core, info_proto = engine.compute_feature_shapley_values(
-                    X_core,
-                    explain_prototypical_features,
-                    "Prototypical Explanations (Core)",
-                    context
-                )
-                self.Phi_prototypical_explanations_[core_samples, :] = Phi_proto_core
-                self.shapley_info_['prototypical_explanations'] = info_proto
-
-            # Stereotypical explanations (if applicable)
-            if run_stereo_exp and self.stereotype_column is not None:
-                if self.verbose:
-                    print(f"  Computing stereotypical explanations (core: {len(core_samples)} samples)...")
-
-                # Slice to core_samples so local index i == core_samples[i] globally
-                context['target_values'] = _full_target_values[core_samples] if _full_target_values is not None else None
-                
-                Phi_stereo_core, info_stereo = engine.compute_feature_shapley_values(
-                    X_core,
-                    explain_stereotypical_features,
-                    "Stereotypical Explanations (Core)",
-                    context
-                )
-                self.Phi_stereotypical_explanations_[core_samples, :] = Phi_stereo_core
-                self.shapley_info_['stereotypical_explanations'] = info_stereo
-            
-            # MEMORY CLEANUP
-            _cleanup_memory(X_core)
-        
-        # COMPUTE SECONDARY SAMPLES (reduced permutations for speed)
-        if len(secondary_samples) > 0:
-            # Temporarily reduce permutations
+        for tier, rows in (("Core", core_samples), ("Secondary", secondary_samples)):
+            if len(rows) == 0:
+                continue
             original_n_perms = engine.n_permutations
-            engine.n_permutations = max(10, original_n_perms // 2)
-            
+            if tier == "Secondary":
+                engine.n_permutations = max(10, original_n_perms // 2)
             if self.verbose:
-                print(f"  Computing explanations (secondary: {len(secondary_samples)} samples, {engine.n_permutations} perms)...")
-            
-            X_secondary = X_dense[secondary_samples, :]
-
-            if run_arch_exp:
-                Phi_arch_sec, _ = engine.compute_feature_shapley_values(
-                    X_secondary, explain_archetypal_features,
-                    "Archetypal Explanations (Secondary)", context
-                )
-                self.Phi_archetypal_explanations_[secondary_samples, :] = Phi_arch_sec
-
-            if run_proto_exp:
-                Phi_proto_sec, _ = engine.compute_feature_shapley_values(
-                    X_secondary, explain_prototypical_features,
-                    "Prototypical Explanations (Secondary)", context
-                )
-                self.Phi_prototypical_explanations_[secondary_samples, :] = Phi_proto_sec
-
-            if run_stereo_exp and self.stereotype_column is not None:
-                # Re-slice target_values for secondary indices so local indices align
-                context['target_values'] = _full_target_values[secondary_samples] if _full_target_values is not None else None
-                Phi_stereo_sec, _ = engine.compute_feature_shapley_values(
-                    X_secondary, explain_stereotypical_features,
-                    "Stereotypical Explanations (Secondary)", context
-                )
-                self.Phi_stereotypical_explanations_[secondary_samples, :] = Phi_stereo_sec
-            
-            # Restore original permutations
-            engine.n_permutations = original_n_perms
-            
-            # MEMORY CLEANUP
-            _cleanup_memory(X_secondary)
-        else:
-            self.Phi_stereotypical_explanations_ = None if self.stereotype_column is None else self.Phi_stereotypical_explanations_
-
-    def _v04_archetypal_value(
-        self,
-        X_subset: np.ndarray,
-        indices: np.ndarray,
-        context: Dict
-    ) -> float:
-        """Value function: Mean archetypal rank from v0.4 NMF method (Option A)."""
-        if len(X_subset) < context['nmf_rank']:
-            return 0.0
-        
-        try:
-            nmf = NMF(
-                n_components=min(context['nmf_rank'], len(X_subset)-1),
-                init='random',
-                random_state=context['random_state'],
-                max_iter=100,
-                tol=0.01
-            )
-            
-            X_nn = X_subset - X_subset.min() + 1e-6
-            W_subset = nmf.fit_transform(X_nn)
-            W_norm = W_subset / (W_subset.sum(axis=1, keepdims=True) + 1e-12)
-            arch_scores = np.max(W_norm, axis=1)
-            
-            return float(np.mean(arch_scores))
-        except Exception:
-            return float(np.mean(np.ptp(X_subset, axis=0)))
-
-    def _v04_prototypical_value(
-        self,
-        X_subset: np.ndarray,
-        indices: np.ndarray,
-        context: Dict
-    ) -> float:
-        """Value function: Coverage from v0.4 facility location."""
-        if len(X_subset) < 2:
-            return 0.0
-        
-        norms = np.linalg.norm(X_subset, axis=1, keepdims=True)
-        norms[norms == 0.0] = 1.0
-        X_l2 = X_subset / norms
-        
-        sims = X_l2 @ X_l2.T
-        np.fill_diagonal(sims, 0)
-        
-        max_sims = np.max(sims, axis=1) if sims.shape[0] > 0 else np.array([0.0])
-        return float(np.mean(max_sims))
-
-    def _v04_stereotypical_value(
-        self,
-        X_subset: np.ndarray,
-        indices: np.ndarray,
-        context: Dict
-    ) -> float:
-        """Value function: Target alignment from v0.4 stereotype targeting."""
-        if context.get('target_values') is None:
-            s = np.max(np.abs(X_subset - 0.5), axis=1) * 2.0
-            return float(np.mean(s))
-        
-        target_vals = context['target_values'][indices]
-        target = context['stereotype_target']
-        
-        if target == 'max':
-            return float(np.mean(target_vals))
-        elif target == 'min':
-            return float(-np.mean(target_vals))
-        else:
-            return float(-np.mean(np.abs(target_vals - float(target))))
+                print(f"  Computing explanations ({tier.lower()}: {len(rows)} samples, "
+                      f"{engine.n_permutations} perms)...")
+            X_tier = X_dense[rows, :]
+            try:
+                for kind, run, fn, target in (
+                    ("archetypal", run_arch_exp, explain_archetypal_features, self.Phi_archetypal_explanations_),
+                    ("prototypical", run_proto_exp, explain_prototypical_features, self.Phi_prototypical_explanations_),
+                    ("stereotypical", run_stereo_exp, explain_stereotypical_features, self.Phi_stereotypical_explanations_),
+                ):
+                    if not run:
+                        continue
+                    if kind == "stereotypical":
+                        context['weights'] = _stereo_weights[rows]
+                    Phi_tier, info = engine.compute_feature_shapley_values(
+                        X_tier, fn, f"{kind.capitalize()} Explanations ({tier})", context)
+                    target[rows, :] = Phi_tier
+                    if tier == "Core":
+                        info['method'] = 'monte_carlo'
+                        self.shapley_info_[f'{kind}_explanations'] = info
+            finally:
+                engine.n_permutations = original_n_perms
+            _cleanup_memory(X_tier)
 
     def _compute_shapley_formative_ranks(self) -> pd.DataFrame:
         """Compute formative instance rankings from Shapley values.
@@ -3387,14 +3698,14 @@ class DataTypical:
             "shapley_mode","shapley_n_permutations","shapley_top_n",
             "shapley_early_stopping_patience","shapley_early_stopping_tolerance",
             "shapley_compute_formative","fast_mode","archetypal_method",
-            "formative_method",
+            "formative_method", "explanation_method",
             # v0.8.0: feature_weights was missing, so from_config(to_config())
             # silently dropped it and produced a different fit. On a five-feature
             # frame that moved archetypal_rank by 0.33 and prototypical_rank by
             # 0.50, which is a different answer, not a rounding difference.
             "feature_weights",
         ]}
-        cfg["version"] = "0.8.1"
+        cfg["version"] = __version__
         return cfg
 
     @classmethod
@@ -3620,20 +3931,10 @@ class DataTypical:
             warnings.warn("All stereotype values are NaN, using zeros")
             return np.zeros(len(values))
         
-        # Compute target value
-        if isinstance(self.stereotype_target, str):
-            if self.stereotype_target == "min":
-                target = np.nanmin(values)
-            elif self.stereotype_target == "max":
-                target = np.nanmax(values)
-            else:
-                raise ValueError(
-                    f"stereotype_target must be 'min', 'max', or numeric value, "
-                    f"got '{self.stereotype_target}'"
-                )
-        else:
-            target = float(self.stereotype_target)
-        
+        # The value ranked towards, resolved exactly as the formative game
+        # resolves it (v0.8.2).
+        target = _stereotype_tau(values, self.stereotype_target)
+
         # Rank by distance to target (inverted: 1 = closest, 0 = furthest)
         distances = np.abs(values - target)
         max_dist = np.nanmax(distances)
@@ -3980,7 +4281,7 @@ class DataTypical:
         if self.feature_weights is not None:
             w = np.asarray(self.feature_weights, dtype=np.float64).ravel()
             if w.shape[0] != len(self.feature_columns_):
-                warnings.warn("feature_weights length mismatch -- ignoring weights.")
+                warnings.warn("feature_weights length mismatch; ignoring weights.")
             else:
                 X_scaled = (X_scaled * w[keep_mask]).astype(self.dtype, copy=False)
 
@@ -4104,6 +4405,7 @@ class DataTypical:
             self.stereotype_keyword_scores_ = None
         
         X_scaled_sp = _sparse_minmax_0_1_nonneg(X_tfidf)
+        self._text_scaled_fit_ = X_scaled_sp
         X_l2 = _sparse_l2_normalize_rows(X_scaled_sp)
         
         return X_scaled_sp, X_l2
@@ -4378,14 +4680,9 @@ class DataTypical:
             else:  # 'nmf'
                 W, H = self._fit_archetypal_nmf(X_euc_fit)
 
-            # Store with validation and correct dtype
-            input_dtype = X_euc_fit.dtype
-            if input_dtype == np.float64:
-                target_dtype = np.float64
-            elif self.dtype == 'float32':
-                target_dtype = np.float32
-            else:
-                target_dtype = np.float64
+            # X_euc_fit is float64 by construction above, so the archetypes
+            # are stored in float64 too, whatever the working dtype.
+            target_dtype = np.float64
 
             self.W_ = W.astype(target_dtype, copy=False)
             self.H_ = H.astype(target_dtype, copy=False)
@@ -4526,12 +4823,8 @@ class DataTypical:
             if knee is not None:
                 self.knee_ = knee
             elif len(mg) > 2:
-                diffs = np.diff(mg)
-                if len(diffs) > 1:
-                    diffs2 = np.diff(diffs)
-                    self.knee_ = int(np.argmax(np.abs(diffs2)) + 1)
-                else:
-                    self.knee_ = 1
+                diffs2 = np.diff(np.diff(mg))
+                self.knee_ = int(np.argmax(np.abs(diffs2)) + 1)
             else:
                 self.knee_ = len(mg)
 
@@ -4773,8 +5066,10 @@ class DataTypical:
         """
         Compute cosine similarity assignments to prototypes.
 
-        OPTIMIZED: Uses JIT-compiled function for 2-3x speedup.
-        Uses stored prototype L2 rows so transform on new data is correct.
+        Small and medium problems use the compiled kernel when Numba is
+        available; very large ones, and every problem when it is not, use one
+        BLAS matrix product. Uses stored prototype L2 rows so transform on new
+        data is correct.
         """
         # Convert to dense if needed
         Xl2_dense = X_l2.toarray() if (sp is not None and sp.isspmatrix(X_l2)) else np.asarray(X_l2, dtype=np.float64)
@@ -4788,13 +5083,10 @@ class DataTypical:
         n_samples = Xl2_dense.shape[0]
         n_protos = len(prototype_indices)
         
-        # OPTIMIZED: Use JIT for small to medium datasets
-        if n_samples * n_protos < 1000000:
+        if NUMBA_AVAILABLE and n_samples * n_protos < 1000000:
             sims = _cosine_similarity_jit(Xl2_dense, P_l2)
         else:
-            # For very large datasets, use numpy (better for huge matrices)
-            sims = Xl2_dense @ P_l2.T
-            np.maximum(sims, 0.0, out=sims)
+            sims = _cosine_similarity_np(Xl2_dense, P_l2)
         
         best_idx = sims.argmax(axis=1).astype(int)
         best_sim = sims[np.arange(len(sims)), best_idx]
@@ -4831,6 +5123,9 @@ __all__ = [
     "exact_formative_archetypal",
     "exact_formative_prototypical",
     "exact_formative_stereotypical",
+    "exact_explanations_archetypal",
+    "exact_explanations_prototypical",
+    "exact_explanations_stereotypical",
     "FacilityLocationSelector",
     "DataTypicalError",
     "ConfigError",

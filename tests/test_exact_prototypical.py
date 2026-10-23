@@ -252,6 +252,17 @@ class TestTheCoefficientsAtScale:
             phi = exact_formative_prototypical(X)
         assert np.all(np.isfinite(phi))
 
+    def test_a_non_finite_coefficient_is_refused_not_returned(self, monkeypatch):
+        """If the guard above ever fails, the result is an error, not a nan ranking."""
+        import scipy.special
+
+        from datatypical import DataTypicalError, _prototypical_coefficients
+
+        monkeypatch.setattr(scipy.special, "gammaln",
+                            lambda x: np.full(np.shape(x), np.nan))
+        with pytest.raises(DataTypicalError, match="went non-finite"):
+            _prototypical_coefficients(20)
+
 
 class TestTheSamplerAgreesWithTheClosedForm:
     """

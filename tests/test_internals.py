@@ -73,17 +73,6 @@ class TestNumericHelpers:
         with pytest.raises(MemoryBudgetError):
             dtmod._chunk_len(4, 4, 8, 0)
 
-    @pytest.mark.parametrize(
-        "dtype,expected", [("float32", np.float32), ("float64", np.float64)]
-    )
-    def test_ensure_dtype_converts(self, dtype, expected):
-        X = np.ones((2, 2), dtype=np.int64)
-        assert dtmod._ensure_dtype(X, dtype).dtype == expected
-
-    def test_ensure_dtype_is_a_noop_when_already_correct(self):
-        X = np.ones((2, 2), dtype=np.float32)
-        assert dtmod._ensure_dtype(X, "float32") is X
-
     def test_seed_everything(self):
         dtmod._seed_everything(3)
         first = np.random.rand(4)
@@ -111,12 +100,6 @@ class TestDistanceKernels:
         full = dtmod._euclidean_min_to_set_dense(X, Y, max_memory_mb=4096)
         chunked = dtmod._euclidean_min_to_set_dense(X, Y, max_memory_mb=1)
         np.testing.assert_allclose(full, chunked, rtol=1e-6)
-
-    def test_pairwise_euclidean_jit(self):
-        """Returns the upper triangle only, to halve the memory."""
-        X = np.array([[0.0, 0.0], [3.0, 4.0]])
-        out = dtmod._pairwise_euclidean_jit(X)
-        assert out[0, 1] == pytest.approx(5.0)
 
     def test_cosine_similarity_jit(self):
         X = np.array([[1.0, 0.0], [0.0, 1.0]])

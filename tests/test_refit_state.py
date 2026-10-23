@@ -111,10 +111,12 @@ class TestCrossModalityRefit:
         assert dt.feature_columns_ is None
         assert dt.keep_mask_ is None
 
-    def test_the_visualisations_refuse_after_a_text_refit(self):
+    def test_the_visualisations_describe_the_text_fit_after_a_refit(self):
         """
-        They guard on feature_columns_ being None. With stale tabular values
-        they would have proceeded, plotting the wrong data.
+        Through v0.8.1 they refused any text fit. Since v0.8.2 they label a
+        text fit with its vocabulary, so stale tabular columns surviving the
+        refit would now be plotted rather than refused: the labels must be
+        the text fit's terms and none of the tabular columns.
         """
         from datatypical_viz import heatmap, profile_plot
 
@@ -122,14 +124,17 @@ class TestCrossModalityRefit:
                          shapley_compute_formative=False,
                          archetypal_method="nmf", nmf_rank=2, n_prototypes=3,
                          random_state=0)
-        dt.fit_transform(_frame(30, 5, seed=12))
+        tabular = _frame(30, 5, seed=12)
+        dt.fit_transform(tabular)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             dt.fit_text(CORPUS)
-        with pytest.raises(RuntimeError, match="requires a tabular"):
-            heatmap(dt, samples=[0, 1])
-        with pytest.raises(RuntimeError, match="requires a tabular"):
-            profile_plot(dt, 0)
+        terms = set(dt.vectorizer_.get_feature_names_out())
+        stale = {str(c) for c in tabular.columns}
+        for ax in (heatmap(dt, samples=[0, 1]), profile_plot(dt, 0)):
+            labels = {t.get_text() for t in ax.get_xticklabels()}
+            assert labels and labels <= terms
+            assert not labels & stale
 
     def test_text_vectorizer_does_not_survive_into_a_tabular_fit(self):
         dt = DataTypical(archetypal_method="nmf", nmf_rank=2, n_prototypes=3,

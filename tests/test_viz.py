@@ -179,6 +179,14 @@ class TestSignificancePlot:
         ax = significance_plot(results, color_by="score")
         assert ax.get_legend() is None
 
+    def test_continuous_colour_on_a_supplied_axis(self, viz_fit):
+        """The colour bar takes room from the caller's axes, not a new one."""
+        _, results = viz_fit
+        fig, ax = plt.subplots()
+        assert significance_plot(results, color_by="score", ax=ax) is ax
+        assert len(fig.axes) == 2
+        assert fig.axes[1].get_ylabel() == "Score"
+
     def test_unknown_color_by_column(self, viz_fit):
         _, results = viz_fit
         with pytest.raises(ValueError, match="color_by column"):
@@ -337,6 +345,11 @@ class TestHeatmap:
         ax = heatmap(dt, results=results, top_n=4, top_features=3)
         assert len(ax.get_xticklabels()) == 3
 
+    def test_top_features_must_be_at_least_one(self, viz_fit):
+        dt, results = viz_fit
+        with pytest.raises(ValueError, match="top_features must be"):
+            heatmap(dt, results=results, top_n=4, top_features=0)
+
     def test_top_n_defaults_from_the_fit(self, viz_fit):
         dt, results = viz_fit
         assert heatmap(dt, results=results) is not None
@@ -372,7 +385,8 @@ class TestHeatmap:
         fig, ax = plt.subplots()
         assert heatmap(dt, results=results, top_n=3, ax=ax) is ax
 
-    def test_requires_a_tabular_fit(self, corpus):
+    def test_serves_a_text_fit(self, corpus):
+        """Refused through v0.8.1; the vocabulary names the columns since v0.8.2."""
         dt = DataTypical(
             shapley_mode=True, shapley_n_permutations=4, nmf_rank=2,
             n_prototypes=3, archetypal_method="nmf", random_state=0,
@@ -380,8 +394,9 @@ class TestHeatmap:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             dt.fit_transform_text(corpus)
-        with pytest.raises(RuntimeError, match="requires a tabular"):
-            heatmap(dt, samples=[0, 1])
+        ax = heatmap(dt, samples=[0, 1])
+        terms = set(dt.vectorizer_.get_feature_names_out())
+        assert {t.get_text() for t in ax.get_xticklabels()} <= terms
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +498,8 @@ class TestProfilePlot:
         top = results["archetypal_rank"].idxmax()
         assert profile_plot(dt, top, figsize=(10, 4)) is not None
 
-    def test_requires_a_tabular_fit(self, corpus):
+    def test_serves_a_text_fit(self, corpus):
+        """Refused through v0.8.1; the vocabulary names the bars since v0.8.2."""
         dt = DataTypical(
             shapley_mode=True, shapley_n_permutations=4, nmf_rank=2,
             n_prototypes=3, archetypal_method="nmf", random_state=0,
@@ -491,8 +507,9 @@ class TestProfilePlot:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             dt.fit_transform_text(corpus)
-        with pytest.raises(RuntimeError, match="requires a tabular"):
-            profile_plot(dt, 0)
+        ax = profile_plot(dt, 0)
+        terms = set(dt.vectorizer_.get_feature_names_out())
+        assert {t.get_text() for t in ax.get_xticklabels()} <= terms
 
     def test_constant_feature_does_not_divide_by_zero(self):
         rng = np.random.default_rng(3)

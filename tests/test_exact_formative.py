@@ -306,17 +306,21 @@ class TestExactStereotypical:
             {"target_values": vals, "target": target, "median": median})
         assert exact_formative_stereotypical(vals, target, median).sum() ==             pytest.approx(total, rel=1e-9)
 
-    def test_it_is_affine_in_the_deviation(self):
+    @pytest.mark.parametrize("target", ["max", "min", 2.5])
+    def test_it_is_affine_in_the_distance_to_the_target(self, target):
         """
         The consequence worth knowing: this ranking is a monotone transform of
-        the stereotype column and carries no information beyond it.
+        the stereotype column and carries no information beyond it. Since
+        v0.8.2 the distance is to the column's extreme for 'max' and 'min', the
+        one the actual rank uses, rather than the excess over the median.
         """
         rng = np.random.default_rng(0)
         vals = rng.normal(size=200) * 10
         median = float(np.median(vals))
-        phi = exact_formative_stereotypical(vals, "max", median)
-        deviation = np.maximum(vals - median, 0.0)
-        assert abs(np.corrcoef(phi, deviation)[0, 1]) == pytest.approx(1.0)
+        phi = exact_formative_stereotypical(vals, target, median)
+        tau = {"max": vals.max(), "min": vals.min()}.get(target, target)
+        distance = np.abs(vals - tau)
+        assert np.corrcoef(phi, distance)[0, 1] == pytest.approx(-1.0)
 
     def test_the_median_is_computed_when_not_given(self):
         vals = np.array([1.0, 2.0, 3.0, 4.0, 5.0])

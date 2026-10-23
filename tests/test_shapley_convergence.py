@@ -68,6 +68,11 @@ class TestRankCorrelationHelper:
         b = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
         assert dtmod._rank_correlation(a, b) == pytest.approx(1.0)
 
+    def test_too_few_finite_points_gives_nan(self):
+        a = np.array([1.0, np.nan, np.inf, 4.0, 5.0])
+        b = np.array([1.0, 2.0, 3.0, np.nan, 5.0])
+        assert np.isnan(dtmod._rank_correlation(a, b))
+
     def test_it_agrees_with_scipy(self):
         from scipy.stats import spearmanr
 
