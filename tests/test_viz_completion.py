@@ -84,7 +84,7 @@ class TestHeatmapDiagnostics:
     def test_zero_shapley_rows_are_reported_for_formative_ordering(
         self, shapley_fit, monkeypatch, capsys
     ):
-        """Formative instances need not themselves be significant."""
+        """Explained rows of zeros are reported as computed, not as missing (v0.8.3)."""
         dt, results = shapley_fit
         n_features = dt.Phi_archetypal_explanations_.shape[1]
 
@@ -99,8 +99,9 @@ class TestHeatmapDiagnostics:
         monkeypatch.setattr(dt, "shapley_top_n", None)
         heatmap(dt, results=results, order="formative", top_n=3)
         out = capsys.readouterr().out
-        assert "zero Shapley values" in out
-        assert "CREATE structure" in out
+        assert "3/3 top formative archetypal instances have zero Shapley values" in out
+        assert "were computed" in out
+        assert "left out" not in out
 
     def test_sample_labels_without_a_training_index(self, shapley_fit, monkeypatch):
         dt, _ = shapley_fit

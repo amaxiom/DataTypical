@@ -1,5 +1,5 @@
 """
-DataTypical v0.8.2 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.8.3 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
@@ -12,6 +12,35 @@ Key Innovation:
 Two complementary perspectives:
 1. LOCAL: "This sample IS significant because features X, Y contribute most"
 2. GLOBAL: "This sample CREATES significance by defining the distribution and boundary"
+
+What's new in v0.8.3:
+- CHANGED: the archetypal and prototypical feature-level explanations play
+  games built from the significance scores, with the fitted archetypes and
+  prototypes held fixed (new explanation_game, default 'fitted'). The 0.8.2
+  games did not follow the ranks they accompany, and the prototypical one,
+  the variance of a sample's own values, ran against prototypical_rank. Now
+  the archetypal attributions sum to archetypal_rank exactly, and the
+  prototypical ones to the prototypical score with its distance squared.
+  Both are closed forms. New public functions
+  exact_explanations_archetypal_fitted and exact_explanations_prototypical_fitted.
+  explanation_game='legacy' reproduces a 0.8.2 result. The stereotypical
+  explanations are unchanged.
+- FIXED: transform() on rows the model was not fitted on gave each one the
+  formative ranks of whichever training row shared its index label. A row
+  now gets formative ranks only when it is a training sample (same label and
+  same feature values; for text, same position and same document), and NaN
+  otherwise, with a warning.
+- FIXED: transform_text() on new documents scaled their term weights by the
+  new corpus's own maxima, so one new document's terms all became 1.0; it now
+  uses the training corpus's, as tabular transform() uses the training range.
+  With a stereotype_column from text_metadata it read the TRAINING metadata
+  for the new documents; it now takes text_metadata= and refuses without it.
+- FIXED: get_formative_attributions() raised whenever the archetypal
+  formative values were absent, although the others had been computed.
+- FIXED: a sampled Shapley run reported converged=True whenever it used all
+  its permutations; converged now means early stopping found it stable.
+- FIXED: a k-nearest-neighbour density over the whole dataset was computed on
+  every fit and never used.
 
 What's new in v0.8.2:
 - FIXED: `import datatypical` hung forever from a folder the user cannot write
@@ -142,7 +171,7 @@ from sklearn.exceptions import ConvergenceWarning
 # configuration with it and the packaging metadata reads it, so a release can
 # no longer ship fits labelled with the previous version. Before v0.8.2 it was
 # typed out separately in each place, with nothing keeping them in step.
-__version__ = "0.8.2"
+__version__ = "0.8.3"
 
 
 # ============================================================
@@ -481,16 +510,35 @@ def _sparse_l2_normalize_rows(X: "sp.spmatrix") -> "sp.spmatrix":
     return D @ X
 
 
-def _sparse_minmax_0_1_nonneg(M: "sp.spmatrix") -> "sp.spmatrix":
+def _sparse_column_max(M: "sp.spmatrix") -> np.ndarray:
+    """Each column's maximum, with 1.0 standing in for an all-zero column."""
+    A = M.tocsc(copy=False)
+    # CRITICAL: Must use .toarray() to convert sparse matrix to dense
+    col_max = A.max(axis=0).toarray().ravel()
+    col_max[col_max == 0.0] = 1.0
+    return col_max
+
+
+def _sparse_minmax_0_1_nonneg(M: "sp.spmatrix",
+                              col_max: Optional[np.ndarray] = None) -> "sp.spmatrix":
+    """
+    Divide each column by its maximum: by M's own, or by ``col_max`` when given
+    (v0.8.3: transform passes the training corpus's, as tabular transform
+    scales by the training range).
+    """
     if sp is None:
         raise ImportError("scipy is required for sparse operations.")
     if not sp.isspmatrix(M):
         raise TypeError("Expected a scipy.sparse matrix.")
     A = M.tocsc(copy=False)
-    # CRITICAL: Must use .toarray() to convert sparse matrix to dense
-    col_max = A.max(axis=0).toarray().ravel()
-    col_max[col_max == 0.0] = 1.0
+    if col_max is None:
+        col_max = _sparse_column_max(A)
     return (A @ sp.diags(1.0 / col_max)).tocsr()
+
+
+def _document_key(doc) -> bytes:
+    """A short digest of one document, to recognise it again at transform."""
+    return hashlib.blake2b(str(doc).encode("utf-8"), digest_size=16).digest()
 
 
 def _chunk_len(n_left: int, n_right: int, bytes_per: int, max_memory_mb: int) -> int:
@@ -664,8 +712,11 @@ def _cosine_similarity_np(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
 # ============================================================
 # [D] Facility-Location (CELF, deterministic)
 # ============================================================
-@dataclass
 class FacilityLocationSelector:
+    # v0.8.3: no longer a @dataclass. It declared no fields, so the generated
+    # __eq__ compared empty tuples and every selector equalled every other,
+    # whatever its n_prototypes, and the generated __hash__ = None made it
+    # unhashable.
     def __init__(self, n_prototypes=10, deterministic=True, speed_mode=False, verbose=False):
         self.n_prototypes = int(n_prototypes)
         self.deterministic = bool(deterministic)
@@ -681,8 +732,6 @@ class FacilityLocationSelector:
         Expects rows to be L2-normalized. Works with dense or sparse input.
         Returns: (selected_indices, marginal_gains)
         """
-        import numpy as np, heapq, hashlib
-    
         # --- dense float64 view
         if sp is not None and sp.isspmatrix(X_l2):
             X = X_l2.toarray().astype(np.float64, copy=False)
@@ -1087,9 +1136,13 @@ class ShapleySignificanceEngine:
         _split_rho = _rank_correlation(shapley_half.sum(axis=1),
                                        _other_half.sum(axis=1))
 
+        # v0.8.3: converged means early stopping found the estimate stable.
+        # It used to be set True whenever every permutation had run, which is
+        # every run at the default settings (see earliest_early_stop), so it
+        # read True even where split_half_rho showed a ranking of noise.
         info = {
             'n_permutations_used': n_perms_used,
-            'converged': info.get('converged', False) if n_perms_used < self.n_permutations else True,
+            'converged': bool(info.get('converged', False)),
             'mean_rel_change': info.get('mean_rel_change', 0.0),
             'additivity_error': float(additivity_error),
             'total_shapley': float(total_from_shapley),
@@ -1201,9 +1254,13 @@ class ShapleySignificanceEngine:
         
         # Compute additivity error
         total_errors = []
+        with_features = context is not None and context.get('with_features', False)
         for sample_idx in range(n_samples):
             shapley_total = np.sum(Phi[sample_idx, :])
-            if context is not None:
+            if with_features:
+                actual_value = value_function(X[sample_idx:sample_idx+1, :], np.array([sample_idx]),
+                                              context, np.arange(n_features))
+            elif context is not None:
                 actual_value = value_function(X[sample_idx:sample_idx+1, :], np.array([sample_idx]), context)
             else:
                 actual_value = value_function(X[sample_idx:sample_idx+1, :], np.array([sample_idx]))
@@ -1215,7 +1272,7 @@ class ShapleySignificanceEngine:
         
         info_out = {
             'n_permutations_used': n_perms_used,
-            'converged': info.get('converged', False) if n_perms_used < self.n_permutations else True,
+            'converged': bool(info.get('converged', False)),
             'mean_rel_change': info.get('mean_rel_change', 0.0),
             'additivity_error': float(additivity_error)
         }
@@ -1284,16 +1341,23 @@ class ShapleySignificanceEngine:
         """
         n_features = X.shape[1]
         shapley_contrib = np.zeros(n_features, dtype=np.float64)
-        
+        # v0.8.3: a value function that needs to know which features the
+        # coalition holds, not only their values, asks for them with
+        # context['with_features'] and receives them as a fourth argument.
+        with_features = context is not None and context.get('with_features', False)
+
         # Compute all value function calls first (can't JIT this part)
         values = np.zeros(n_features + 1, dtype=np.float64)
         values[0] = 0.0
-        
+
         for j in range(n_features):
             feature_subset = perm[:j+1]
             X_sample_subset = X[sample_idx:sample_idx+1, :][:, feature_subset]
-            
-            if context is not None:
+
+            if with_features:
+                values[j+1] = value_function(X_sample_subset, np.array([sample_idx]),
+                                             context, feature_subset)
+            elif context is not None:
                 values[j+1] = value_function(X_sample_subset, np.array([sample_idx]), context)
             else:
                 values[j+1] = value_function(X_sample_subset, np.array([sample_idx]))
@@ -1741,7 +1805,9 @@ def _scaled_mean_game_rows(C: np.ndarray, scale: Optional[np.ndarray] = None) ->
 
 def exact_explanations_archetypal(X: np.ndarray) -> np.ndarray:
     """
-    Exact Shapley values for the archetypal explanation game, without sampling.
+    Exact Shapley values for the 0.8.2 archetypal explanation game, without
+    sampling. From v0.8.3 this is the ``explanation_game='legacy'`` game; the
+    default is exact_explanations_archetypal_fitted.
 
     For one sample x, scaled to [0, 1], over a coalition F of its features,
 
@@ -1772,7 +1838,9 @@ def exact_explanations_archetypal(X: np.ndarray) -> np.ndarray:
 
 def exact_explanations_prototypical(X: np.ndarray) -> np.ndarray:
     """
-    Exact Shapley values for the prototypical explanation game, without sampling.
+    Exact Shapley values for the 0.8.2 prototypical explanation game, without
+    sampling. From v0.8.3 this is the ``explanation_game='legacy'`` game; the
+    default is exact_explanations_prototypical_fitted.
 
     For one sample x over a coalition F of its features the value is the
     population variance of its values there, v(F) = var over f in F of x_f, so
@@ -1892,6 +1960,264 @@ def exact_explanations_stereotypical(
             f"target_values has {weights.size} entries for {X.shape[0]} samples."
         )
     return _scaled_mean_game_rows(np.abs(X), weights)
+
+
+# ---- v0.8.3: explanation games on the fitted model ----
+# The two 0.8.2 games above, exact_explanations_archetypal and
+# exact_explanations_prototypical, are defined feature by feature without
+# reference to the archetypes or prototypes, and their values do not follow
+# the ranks they accompany: across Wine, MUTAG and BIOSSES the archetypal game
+# correlated with archetypal_rank at 0.27, 0.58 and 0.04, and the prototypical
+# game, the variance of a sample's own values, at -0.18, -0.35 and -0.81. The
+# games below are built from the significance scores' own terms, with the
+# fitted model held fixed, so a sample's attributions decompose its rank.
+# explanation_game='legacy' keeps the 0.8.2 games.
+
+def _corner_feature_indices(X: np.ndarray) -> np.ndarray:
+    """
+    The features the archetypal score's corner term reads, chosen as it always
+    has been: the two highest-variance features that reach both bounds of
+    [0, 1], or the two highest-variance features when fewer than two do.
+    """
+    eps = 1e-12
+    col_min, col_max = X.min(axis=0), X.max(axis=0)
+    idxs = np.where((col_min <= eps) & (col_max >= 1.0 - eps))[0]
+    if idxs.size >= 2:
+        var = X[:, idxs].var(axis=0)
+        return idxs[np.argsort(-var)[:2]]
+    var = X.var(axis=0)
+    return np.argsort(-var)[:2] if X.shape[1] >= 2 else np.array([0])
+
+
+def _archetype_weight_terms(
+    X: np.ndarray,
+    archetypes: np.ndarray,
+    nmf_model=None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    One term per feature of the membership part of the archetypal score.
+
+    Returns ``(terms, wmax)`` with ``terms.sum(axis=1)`` equal to ``wmax``, the
+    largest share of a sample's archetype weights, which archetypal_rank
+    weights by 0.7.
+
+    For PCHA and the convex hull the weights are the score's least-squares
+    projection, w = x B with B = H^T (H H^T + 1e-6 I)^+, clipped at zero. B is
+    linear, so the dominant archetype's weight is sum over f of x_f B[f, k],
+    and dividing by the sample's total positive weight S gives the terms. For
+    NMF the weights come from ``nmf_model.transform``, a non-negative least
+    squares solve. On its active set, the archetypes with positive weight, that
+    solution is a plain least-squares projection, so the same decomposition
+    holds there; the terms are rescaled to the solver's own weight so that
+    they sum to it exactly despite its tolerance. A sample whose weights are
+    all zero has wmax = 0 in the score and gets zero terms.
+    """
+    X = np.atleast_2d(np.asarray(X, dtype=np.float64))
+    H = np.asarray(archetypes, dtype=np.float64)
+    n, d = X.shape
+    terms = np.zeros((n, d), dtype=np.float64)
+    rows = np.arange(n)
+
+    if nmf_model is None:
+        B = H.T @ np.linalg.pinv(H @ H.T + 1e-6 * np.eye(H.shape[0]))   # (d, k)
+        W = np.maximum(X @ B, 0.0)
+        S = W.sum(axis=1)
+        k = W.argmax(axis=1)
+        ok = S > 0.0
+        terms[ok] = X[ok] * B[:, k[ok]].T / S[ok, None]
+    else:
+        # Clipped at zero as the NMF fit clips its input; scaled training data
+        # is non-negative already, so for it this is the score's own call.
+        W = np.asarray(nmf_model.transform(np.maximum(X, 0.0)), dtype=np.float64)
+        S = W.sum(axis=1)
+        k = W.argmax(axis=1)
+        ok = S > 0.0
+        active = W > 0.0
+        patterns, group = np.unique(active, axis=0, return_inverse=True)
+        group = np.asarray(group).ravel()
+        for g, pattern in enumerate(patterns):
+            members = np.where((group == g) & ok)[0]
+            if members.size == 0:
+                continue
+            Ha = H[pattern]
+            Ba = Ha.T @ np.linalg.pinv(Ha @ Ha.T)                       # (d, a)
+            position = np.cumsum(pattern) - 1
+            t = X[members] * Ba[:, position[k[members]]].T
+            total = t.sum(axis=1)
+            wk = W[members, k[members]]
+            fine = np.isfinite(total) & (total > 0.0)
+            t[fine] *= (wk[fine] / total[fine])[:, None]
+            if not fine.all():
+                # The solver stopped far from its optimum for these rows.
+                # Spread the weight over the archetype's own profile instead.
+                profile = H[k[members[~fine]]]
+                mass = profile.sum(axis=1, keepdims=True)
+                mass[mass == 0.0] = 1.0
+                t[~fine] = wk[~fine, None] * profile / mass
+            terms[members] = t / S[members, None]
+
+    wmax = np.zeros(n, dtype=np.float64)
+    wmax[ok] = W[rows[ok], k[ok]] / S[ok]
+    return terms, wmax
+
+
+def _corner_explanations(X: np.ndarray, corner_features: np.ndarray) -> np.ndarray:
+    """
+    Exact Shapley values of the archetypal score's corner term.
+
+    The term is 1 - ||m_T|| / sqrt(t), with m = min(x, 1 - x) over the t
+    corner features T (two, or one for single-feature data). Held at that
+    normaliser it is the game u(F) = 1[F meets T] - ||m restricted to F|| /
+    sqrt(t), in which every other feature is a null player. With two players
+    phi_a = (u({a}) + u({a, b}) - u({b})) / 2.
+    """
+    X = np.atleast_2d(np.asarray(X, dtype=np.float64))
+    take = np.asarray(corner_features, dtype=np.intp).ravel()
+    phi = np.zeros(X.shape, dtype=np.float64)
+    m = np.minimum(X[:, take], 1.0 - X[:, take])
+    if take.size >= 2:
+        root = math.sqrt(2.0)
+        u_a = 1.0 - m[:, 0] / root
+        u_b = 1.0 - m[:, 1] / root
+        u_ab = 1.0 - np.sqrt(m[:, 0] ** 2 + m[:, 1] ** 2) / root
+        phi[:, take[0]] = 0.5 * (u_a + u_ab - u_b)
+        phi[:, take[1]] = 0.5 * (u_b + u_ab - u_a)
+    else:
+        phi[:, take[0]] = 1.0 - m[:, 0]
+    return phi
+
+
+def exact_explanations_archetypal_fitted(
+    X: np.ndarray,
+    archetypes: np.ndarray,
+    nmf_model=None,
+    corner_features: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Exact Shapley values for the archetypal explanation game on the fitted
+    model, the default from v0.8.3 (``explanation_game='fitted'``).
+
+    The game is the archetypal score itself,
+
+        archetypal_rank = 0.7 * wmax + 0.3 * corner,
+
+    with the fitted archetypes, the projection onto them and the corner term's
+    features and normaliser held fixed. A coalition F of features keeps its
+    own terms of the membership share wmax, which is linear in the features
+    (see _archetype_weight_terms), and plays the corner term on the corner
+    features it contains, a game on at most two players (see
+    _corner_explanations). Both parts are exact, and by efficiency each
+    sample's values sum to its archetypal_rank.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Scaled samples, shape (n_samples, n_features), as the fit scaled them.
+    archetypes : np.ndarray
+        The fitted archetypes ``H_``, shape (n_archetypes, n_features).
+    nmf_model : sklearn NMF, optional
+        The fitted ``nmf_model_`` when the archetypal backend is NMF, whose
+        ``transform`` the score uses for the weights. None for PCHA and the
+        convex hull.
+    corner_features : np.ndarray, optional
+        Indices of the corner term's features. Defaults to those chosen on X;
+        pass the ones chosen on the whole training set when X holds only some
+        of its rows.
+
+    Returns
+    -------
+    np.ndarray
+        Exact Shapley values, shape (n_samples, n_features).
+    """
+    X = np.atleast_2d(np.asarray(X, dtype=np.float64))
+    take = (_corner_feature_indices(X) if corner_features is None
+            else np.asarray(corner_features, dtype=np.intp))
+    terms, _ = _archetype_weight_terms(X, archetypes, nmf_model)
+    return 0.7 * terms + 0.3 * _corner_explanations(X, take)
+
+
+def _nearest_prototype(X: np.ndarray, P: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Index of, and squared Euclidean distance to, each row's nearest prototype.
+
+    Direct differences, with the squared distances rounded to twelve decimals
+    before the comparison, so that two prototypes at the same distance (common
+    with count data) resolve to the first of them on every platform rather
+    than by the last bit of the arithmetic.
+    """
+    d2 = np.empty((X.shape[0], P.shape[0]), dtype=np.float64)
+    for j in range(P.shape[0]):
+        diff = X - P[j]
+        d2[:, j] = np.einsum("ij,ij->i", diff, diff)
+    nearest = np.round(d2, 12).argmin(axis=1)
+    return nearest, d2[np.arange(X.shape[0]), nearest]
+
+
+def exact_explanations_prototypical_fitted(
+    X: np.ndarray,
+    prototypes: np.ndarray,
+    prototypes_l2: Optional[np.ndarray] = None,
+    distance_scale: Optional[float] = None,
+) -> np.ndarray:
+    """
+    Exact Shapley values for the prototypical explanation game on the fitted
+    model, the default from v0.8.3 (``explanation_game='fitted'``).
+
+    The prototypical score is
+
+        prototypical_rank = 0.5 * (1 - min(d / d95, 1)) + 0.5 * cos,
+
+    with d the Euclidean distance to the nearest prototype p, d95 its 95th
+    percentile over the training set, and cos the cosine similarity to the most
+    similar prototype q. The game keeps both halves with the prototypes and d95
+    held fixed, and writes the distance squared, which is what makes it
+    decomposable:
+
+        v(F) = 0.5 * (1[F nonempty] - sum over f in F of (x_f - p_f)^2 / d95^2)
+             + 0.5 * sum over f in F of xhat_f * qhat_f,
+
+    xhat and qhat being the L2-normalised rows the score's cosine reads. It is
+    additive apart from the constant, which the Shapley value splits evenly, so
+
+        phi_f = 0.5 * (1/d - (x_f - p_f)^2 / d95^2) + 0.5 * xhat_f * qhat_f,
+
+    and the values sum to 0.5 * (1 - d^2 / d95^2) + 0.5 * cos. That differs
+    from prototypical_rank only in how the distance enters: squared, and not
+    clipped at d95.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Scaled samples, shape (n_samples, n_features), as the fit scaled them.
+    prototypes : np.ndarray
+        The fitted prototypes' scaled rows, ``prototype_features_``.
+    prototypes_l2 : np.ndarray, optional
+        Their L2-normalised rows, ``prototype_features_l2_``. Computed from
+        ``prototypes`` when not given.
+    distance_scale : float, optional
+        d95. Defaults to the 95th percentile of the distances from X to its
+        nearest prototypes; pass the training set's value when X holds only
+        some of its rows.
+
+    Returns
+    -------
+    np.ndarray
+        Exact Shapley values, shape (n_samples, n_features).
+    """
+    X = np.atleast_2d(np.asarray(X, dtype=np.float64))
+    P = np.atleast_2d(np.asarray(prototypes, dtype=np.float64))
+    n, d = X.shape
+    nearest, d2 = _nearest_prototype(X, P)
+    if distance_scale is None:
+        distance_scale = float(np.percentile(np.sqrt(d2), 95)) if n else 1.0
+    if not distance_scale:
+        distance_scale = 1.0
+    X_l2 = _l2_normalize_rows_dense(X)
+    P_l2 = (_l2_normalize_rows_dense(P) if prototypes_l2 is None
+            else np.atleast_2d(np.asarray(prototypes_l2, dtype=np.float64)))
+    similar = np.round(X_l2 @ P_l2.T, 12).argmax(axis=1)
+    return (0.5 * (1.0 / d - (X - P[nearest]) ** 2 / distance_scale ** 2)
+            + 0.5 * X_l2 * P_l2[similar])
 
 
 def formative_archetypal_pcha_cached(
@@ -2245,13 +2571,25 @@ class DataTypical:
     # Pass formative_method='monte_carlo' to reproduce a pre-0.8.0 result.
     formative_method: str = "exact"
     # v0.8.2: how the feature-level explanations are computed, on the same two
-    # settings. All three explanation games have closed forms: the archetypal
-    # and stereotypical ones are mean games over the features and the
-    # prototypical one is a variance game, so each sample costs O(d) instead of
-    # O(M d^2) value-function work. On a 100-document corpus with 1,277 terms
-    # the sampled explanations took about 25 minutes per significance type.
-    # Pass explanation_method='monte_carlo' to reproduce a pre-0.8.2 result.
+    # settings. Every explanation game has a closed form, so each sample costs
+    # O(d) instead of O(M d^2) value-function work. On a 100-document corpus
+    # with 1,277 terms the sampled explanations took about 25 minutes per
+    # significance type. Pass explanation_method='monte_carlo' (with
+    # explanation_game='legacy') to reproduce a pre-0.8.2 result.
     explanation_method: str = "exact"
+    # v0.8.3: which games the archetypal and prototypical explanations play.
+    #   'fitted' (default) games built from the significance scores' own terms
+    #            with the fitted archetypes and prototypes held fixed. The
+    #            archetypal attributions sum to archetypal_rank exactly; the
+    #            prototypical ones to the prototypical score with its distance
+    #            squared (see exact_explanations_*_fitted).
+    #   'legacy' the 0.8.2 games: closeness of each value to a bound of its
+    #            feature, and the variance of the sample's own values. Their
+    #            values do not follow the ranks; the prototypical one runs
+    #            against prototypical_rank (Spearman -0.18 to -0.81 on the
+    #            paper's three datasets).
+    # The stereotypical explanation game is the same under both.
+    explanation_game: str = "fitted"
 
     # ---- Performance Mode (NEW in v0.7) ----
     fast_mode: bool = False
@@ -2299,6 +2637,12 @@ class DataTypical:
     # v0.8.2: the scaled term matrix of a text fit, kept (sparse) so that
     # profile_plot can colour a document's bars by its own term weights.
     _text_scaled_fit_: Optional["sp.spmatrix"] = field(default=None, init=False)
+    # v0.8.3: three more pieces of fitted state are plain attributes, set by
+    # the fit and read with getattr so a fit saved earlier still loads:
+    # _text_doc_hashes_ and _text_col_max_, a digest of each training document
+    # and each term's largest weight over them, with which transform_text
+    # recognises the training corpus and scales new documents; and
+    # _explained_rows_, which training rows the explanations were computed for.
     label_df_: Optional[pd.DataFrame] = field(default=None, init=False)
     text_metadata_: Optional[pd.DataFrame] = field(default=None, init=False)
     stereotype_keyword_scores_: Optional[np.ndarray] = field(default=None, init=False)
@@ -2435,6 +2779,9 @@ class DataTypical:
         self.missingness_ = {}
         self._df_original_fit = None
         self._text_scaled_fit_ = None
+        self._text_doc_hashes_ = None
+        self._text_col_max_ = None
+        self._explained_rows_ = None
         self.label_df_ = None
         self.text_metadata_ = None
         self.stereotype_keyword_scores_ = None
@@ -2550,6 +2897,13 @@ class DataTypical:
                     f"the default, for {_describe[_default]} {_what}, or "
                     f"{_other!r} for {_describe[_other]} ones."
                 )
+        if self.explanation_game not in ("fitted", "legacy"):
+            raise ConfigError(
+                f"explanation_game={self.explanation_game!r} is not recognised. "
+                "Use 'fitted', the default, for explanation games built from "
+                "the significance scores and the fitted archetypes and "
+                "prototypes, or 'legacy' for the 0.8.2 games."
+            )
 
         _implemented = {
             "scale": ("minmax", "MinMax scaling to [0, 1]"),
@@ -2682,13 +3036,16 @@ class DataTypical:
         X : DataFrame, array, or list of strings
             Input data (same format as used in fit)
         **kwargs : optional
-            Additional parameters (same as fit)
-        
+            Additional parameters (same as fit). For text fitted with a
+            stereotype_column, ``text_metadata`` for these documents.
+
         Returns
         -------
         results : pd.DataFrame
-            Significance rankings and diagnostics
-        
+            Significance rankings and diagnostics. With shapley_mode, the
+            formative ranks (``*_shapley_rank``) belong to the training
+            samples: a row that is not one of them gets NaN (v0.8.3).
+
         Examples
         --------
         >>> dt = DataTypical()
@@ -2697,13 +3054,14 @@ class DataTypical:
         """
         if self._detected_data_type is None:
             raise RuntimeError("Model not fitted. Call fit() first.")
-        
+
         return_ranks_only = kwargs.get('return_ranks_only', self.return_ranks_only)
-        
+
         if self._detected_data_type == 'tabular':
             return self._transform_tabular(X, return_ranks_only)
         elif self._detected_data_type == 'text':
-            return self._transform_text(X, return_ranks_only)
+            return self._transform_text(X, return_ranks_only,
+                                        kwargs.get('text_metadata', None))
         elif self._detected_data_type == 'graph':
             # Graph transform needs to recompute topology if edges provided
             edges = kwargs.get('edges', kwargs.get('edge_index', None))
@@ -2878,11 +3236,13 @@ class DataTypical:
             
             ranks = self._score_with_fitted(X_scaled, X_l2, df.index, stereotype_source)
 
-            # Add Shapley formative rankings aligned to the current data index
+            # Formative ranks for the rows that are training samples
             if self.shapley_mode:
-                shapley_ranks = self._compute_shapley_formative_ranks().reindex(df.index)
+                shapley_ranks = self._formative_ranks_for(
+                    df.index, self._training_rows_table(df),
+                    "index label and feature values")
                 ranks = pd.concat([ranks, shapley_ranks], axis=1)
-        
+
         if return_ranks_only:
             return ranks
         out = df.copy()
@@ -2893,39 +3253,138 @@ class DataTypical:
     def _transform_text(
         self,
         corpus: Union[List[str], Iterable[str]],
-        return_ranks_only: bool = False
+        return_ranks_only: bool = False,
+        text_metadata: Optional[pd.DataFrame] = None
     ) -> pd.DataFrame:
         """Internal method for transforming text data."""
         corpus = list(corpus)  # materialize once so keyword scoring can reuse it
         with _ThreadControl(self.deterministic and not self.speed_mode):
             X_scaled, X_l2 = self._preprocess_text_transform(corpus)
             idx = pd.RangeIndex(X_scaled.shape[0])
-            
-            # Get stereotype source (priority: metadata column > keywords > None)
+            is_training = self._training_rows_text(corpus)
+
+            # Stereotype source: the metadata column, or keyword scores
+            # recomputed on these documents. A text fit cannot have both
+            # (ConfigError at fit), and a stereotype_column always comes with
+            # text_metadata (ValueError at fit).
             stereotype_source = None
-            
-            # Priority 1: Metadata column (from fit_text)
-            if self.stereotype_column is not None and self.text_metadata_ is not None:
-                if self.stereotype_column in self.text_metadata_.columns:
-                    stereotype_source = self.text_metadata_[self.stereotype_column]
-            
-            # Priority 2: Keyword scores (recompute on new corpus)
+            if self.stereotype_column is not None:
+                stereotype_source = self._text_stereotype_source(
+                    len(corpus), is_training, text_metadata)
             elif self.stereotype_keywords is not None:
-                corpus_list = list(corpus)
-                X_tfidf = self.vectorizer_.transform(corpus_list)
+                X_tfidf = self.vectorizer_.transform(corpus)
                 keyword_scores = self._compute_keyword_scores(
-                    X_tfidf, corpus_list, self.stereotype_keywords
+                    X_tfidf, corpus, self.stereotype_keywords
                 )
                 stereotype_source = pd.Series(keyword_scores)
-            
+
             ranks = self._score_with_fitted(X_scaled, X_l2, idx, stereotype_source)
 
-            # Add Shapley formative rankings aligned to the current data index
+            # Formative ranks for the documents that are training documents
             if self.shapley_mode:
-                shapley_ranks = self._compute_shapley_formative_ranks().reindex(idx)
+                shapley_ranks = self._formative_ranks_for(
+                    idx, is_training, "position and document text")
                 ranks = pd.concat([ranks, shapley_ranks], axis=1)
-            
+
             return ranks
+
+    def _training_rows_table(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Which rows of df are samples the model was fitted on: the same index
+        label and the same feature values (missing in the same places) as a
+        training row.
+        """
+        cols = self.feature_columns_
+        if df.index.equals(self.train_index_):
+            reference = self._df_original_fit[cols]
+            known = np.ones(len(df), dtype=bool)
+        else:
+            reference = self._df_original_fit[cols].reindex(df.index)
+            known = np.asarray(df.index.isin(self.train_index_), dtype=bool)
+        a = df[cols].to_numpy(dtype=np.float64)
+        b = reference.to_numpy(dtype=np.float64)
+        same = ((a == b) | (np.isnan(a) & np.isnan(b))).all(axis=1)
+        return known & same
+
+    def _training_rows_text(self, corpus: List[str]) -> np.ndarray:
+        """
+        Which documents are the training documents at the same position. A fit
+        saved before v0.8.3 kept no digests, so none can be recognised.
+        """
+        same = np.zeros(len(corpus), dtype=bool)
+        train = getattr(self, "_text_doc_hashes_", None)
+        if train is None:
+            return same
+        keys = np.array([_document_key(doc) for doc in corpus], dtype="S16")
+        m = min(len(keys), len(train))
+        same[:m] = keys[:m] == train[:m]
+        return same
+
+    def _text_stereotype_source(
+        self,
+        n_docs: int,
+        is_training: np.ndarray,
+        text_metadata: Optional[pd.DataFrame]
+    ) -> pd.Series:
+        """
+        The stereotype column for the documents being transformed.
+
+        v0.8.3: the fit's own metadata describes the training documents only.
+        It used to be read for any corpus: by position for one of the same
+        length, so new documents were ranked by the training documents'
+        values, and with a length mismatch deep inside pandas otherwise.
+        """
+        if text_metadata is not None:
+            if len(text_metadata) != n_docs:
+                raise ValueError(
+                    f"text_metadata length ({len(text_metadata)}) must match "
+                    f"corpus length ({n_docs})"
+                )
+            if self.stereotype_column not in text_metadata.columns:
+                raise ValueError(
+                    f"stereotype_column '{self.stereotype_column}' not found in "
+                    f"text_metadata. Available columns: {list(text_metadata.columns)}"
+                )
+            return text_metadata[self.stereotype_column]
+        if n_docs == len(self.text_metadata_) and is_training.all():
+            return self.text_metadata_[self.stereotype_column]
+        raise ConfigError(
+            f"stereotype_column '{self.stereotype_column}' is read from "
+            "text_metadata, and these are not the documents the model was "
+            "fitted on, so the fit's metadata does not describe them. Pass "
+            "text_metadata= with one row per document, holding that column."
+        )
+
+    def _formative_ranks_for(
+        self,
+        index: pd.Index,
+        is_training: np.ndarray,
+        matched_by: str
+    ) -> pd.DataFrame:
+        """
+        Formative ranks for the rows being transformed.
+
+        A formative value measures how a training sample shapes the fitted
+        structure, so only training samples have one. v0.8.3: the ranks used
+        to be aligned by index label alone, so a new row was given those of
+        whichever training row shared its label, which for a default
+        RangeIndex is simply the training row at the same position.
+        """
+        ranks = self._compute_shapley_formative_ranks().reindex(index)
+        n_other = int(np.count_nonzero(~is_training))
+        if n_other:
+            ranks.iloc[np.flatnonzero(~is_training)] = np.nan
+            warnings.warn(
+                f"{n_other} of {len(index)} row(s) are not samples the model was "
+                f"fitted on (matched by {matched_by}), so their formative ranks "
+                "(the *_shapley_rank columns) are NaN. A formative value "
+                "measures how a training sample shapes the fitted structure, "
+                "so a new sample has none. Through v0.8.2 such a row was given "
+                "the formative ranks of whichever training row shared its "
+                "index label.",
+                RuntimeWarning, stacklevel=4
+            )
+        return ranks
     
     def _transform_graph(
         self,
@@ -3232,11 +3691,20 @@ class DataTypical:
         closed forms. ``'monte_carlo'`` samples feature permutations, with the
         two-tier strategy: samples in the top list of two or more significance
         types get the full permutation count, the rest half of it.
+
+        ``explanation_game`` (v0.8.3) chooses the archetypal and prototypical
+        games: ``'fitted'`` (default) plays the significance scores with the
+        fitted model held fixed, ``'legacy'`` the 0.8.2 games. Either method
+        plays either game. The constants a fitted game reads from the whole
+        training set, the corner features and the 95th-percentile prototype
+        distance, are taken from all rows even when only some are explained.
         """
         n_samples, n_features = X_dense.shape
         samples_to_compute = (np.asarray(subsample_indices, dtype=np.intp)
                               if subsample_indices is not None
                               else np.arange(n_samples))
+        self._explained_rows_ = np.zeros(n_samples, dtype=bool)
+        self._explained_rows_[samples_to_compute] = True
 
         run_arch_exp  = self.selected_significance is None or self.selected_significance == "archetypal"
         run_proto_exp = self.selected_significance is None or self.selected_significance == "prototypical"
@@ -3263,23 +3731,48 @@ class DataTypical:
             _stereo_weights = _stereotypical_explanation_weights(
                 _full_target_values, self.stereotype_target)
 
+        # v0.8.3: the fitted games, evaluated once for the rows to explain. The
+        # prototypical game is additive, so its exact values are also its
+        # payoffs; the archetypal game is additive in its membership part and
+        # a two-player game on the corner features.
+        fitted = self.explanation_game == "fitted"
+        _arch_terms = _corner_take = None
+        _proto_phi = None
+        if fitted and run_arch_exp:
+            _corner_take = _corner_feature_indices(X_dense)
+            _arch_terms, _ = _archetype_weight_terms(
+                X_dense[samples_to_compute], self.H_, self.nmf_model_)
+            _arch_terms *= 0.7
+        if fitted and run_proto_exp:
+            P = np.asarray(self.prototype_features_, dtype=np.float64)
+            best = _euclidean_min_to_set_dense(X_dense, P, max_memory_mb=self.max_memory_mb)
+            # The score's own normaliser, computed the same way
+            norm95 = np.percentile(best, 95) or 1.0
+            _proto_phi = exact_explanations_prototypical_fitted(
+                X_dense[samples_to_compute], P, self.prototype_features_l2_, float(norm95))
+
         if self.explanation_method == "exact":
             rows = samples_to_compute
             X_rows = X_dense[rows]
             if self.verbose:
-                print(f"  Exact explanations for {len(rows)} samples x {n_features} features, no sampling")
+                print(f"  Exact explanations for {len(rows)} samples x {n_features} features, "
+                      f"no sampling ({self.explanation_game} games)")
             exact_info = {
                 'method': 'exact',
+                'game': self.explanation_game,
                 'n_permutations_used': 0,
                 'converged': True,
                 'mean_rel_change': 0.0,
                 'additivity_error': 0.0,
             }
             if run_arch_exp:
-                self.Phi_archetypal_explanations_[rows] = exact_explanations_archetypal(X_rows)
+                self.Phi_archetypal_explanations_[rows] = (
+                    _arch_terms + 0.3 * _corner_explanations(X_rows, _corner_take) if fitted
+                    else exact_explanations_archetypal(X_rows))
                 self.shapley_info_['archetypal_explanations'] = dict(exact_info)
             if run_proto_exp:
-                self.Phi_prototypical_explanations_[rows] = exact_explanations_prototypical(X_rows)
+                self.Phi_prototypical_explanations_[rows] = (
+                    _proto_phi if fitted else exact_explanations_prototypical(X_rows))
                 self.shapley_info_['prototypical_explanations'] = dict(exact_info)
             if run_stereo_exp:
                 self.Phi_stereotypical_explanations_[rows] = _scaled_mean_game_rows(
@@ -3287,7 +3780,7 @@ class DataTypical:
                 self.shapley_info_['stereotypical_explanations'] = dict(exact_info)
             return
 
-        # ---- Monte Carlo (the pre-0.8.2 behaviour) ----
+        # ---- Monte Carlo (the pre-0.8.2 behaviour, for either game) ----
         if subsample_indices is not None and hasattr(self, '_union_core_samples'):
             # Core = samples in the top list of two or more significance types.
             core_samples = self._union_core_samples
@@ -3317,6 +3810,25 @@ class DataTypical:
             """The sample's stereotypical weight times its mean |value| over the coalition."""
             return float(ctx['weights'][indices[0]] * np.mean(np.abs(X_subset)))
 
+        # v0.8.3: the fitted games. Each is passed the sample's own per-feature
+        # payoffs in place of its values, so the prototypical game, which is
+        # additive, is their sum, and the archetypal one adds the corner term
+        # on the corner features the coalition holds.
+        def explain_fitted_additive(X_subset, indices, ctx):
+            """An additive game: the sum of the coalition's own payoffs."""
+            return float(np.sum(X_subset))
+
+        def explain_archetypal_fitted(X_subset, indices, ctx, features):
+            """Membership terms of the coalition, plus the corner term on its corner features."""
+            value = float(np.sum(X_subset))
+            if ctx['corner_mask'][features].any():
+                m2 = float(np.sum(ctx['corner_m2'][indices[0], features]))
+                value += 0.3 * (1.0 - math.sqrt(m2) / ctx['corner_root'])
+            return value
+
+        position = np.full(n_samples, -1, dtype=np.intp)
+        position[samples_to_compute] = np.arange(len(samples_to_compute))
+
         context = {'sample_mode': 'features', 'weights': None}
 
         for tier, rows in (("Core", core_samples), ("Secondary", secondary_samples)):
@@ -3337,13 +3849,31 @@ class DataTypical:
                 ):
                     if not run:
                         continue
+                    X_kind, ctx = X_tier, context
                     if kind == "stereotypical":
                         context['weights'] = _stereo_weights[rows]
+                    elif fitted and kind == "archetypal":
+                        X_kind = _arch_terms[position[rows]]
+                        fn = explain_archetypal_fitted
+                        # m^2 on the corner features, zero elsewhere, so a
+                        # coalition's share is one indexed sum
+                        corner_mask = np.zeros(n_features, dtype=bool)
+                        corner_mask[_corner_take] = True
+                        corner_m2 = np.zeros_like(X_tier)
+                        m = np.minimum(X_tier[:, _corner_take], 1.0 - X_tier[:, _corner_take])
+                        corner_m2[:, _corner_take] = m * m
+                        ctx = {'sample_mode': 'features', 'with_features': True,
+                               'corner_mask': corner_mask, 'corner_m2': corner_m2,
+                               'corner_root': math.sqrt(2.0) if _corner_take.size >= 2 else 1.0}
+                    elif fitted and kind == "prototypical":
+                        X_kind = _proto_phi[position[rows]]
+                        fn = explain_fitted_additive
                     Phi_tier, info = engine.compute_feature_shapley_values(
-                        X_tier, fn, f"{kind.capitalize()} Explanations ({tier})", context)
+                        X_kind, fn, f"{kind.capitalize()} Explanations ({tier})", ctx)
                     target[rows, :] = Phi_tier
                     if tier == "Core":
                         info['method'] = 'monte_carlo'
+                        info['game'] = self.explanation_game
                         self.shapley_info_[f'{kind}_explanations'] = info
             finally:
                 engine.n_permutations = original_n_perms
@@ -3445,13 +3975,21 @@ class DataTypical:
         if not self.shapley_mode:
             raise RuntimeError("Shapley mode not enabled. Set shapley_mode=True when fitting.")
         
-        if self.Phi_archetypal_formative_ is None:
+        # v0.8.3: all three, not only the archetypal values. With
+        # selected_significance='prototypical' or 'stereotypical' the archetypal
+        # array is None while the selected one is not, and this used to raise,
+        # blaming fast_mode for a skip that had not happened.
+        if (self.Phi_archetypal_formative_ is None
+                and self.Phi_prototypical_formative_ is None
+                and self.Phi_stereotypical_formative_ is None):
             raise RuntimeError(
                 "Formative instances not computed. "
-                "This occurs when fast_mode=True (formative skipped for speed). "
+                "This occurs when fast_mode=True or shapley_compute_formative=False "
+                "(formative skipped for speed), or when the only significance "
+                "type selected is stereotypical and no stereotype_column is set. "
                 "Use fast_mode=False to compute formative instances."
             )
-        
+
         # Convert DataFrame index to positional index
         if hasattr(self, 'train_index_') and self.train_index_ is not None:
             try:
@@ -3534,37 +4072,19 @@ class DataTypical:
             self._record_settings(tc)
         return self
 
-    def transform_text(self, corpus: Iterable[str]) -> pd.DataFrame:
-        """Transform text corpus."""
-        corpus = list(corpus)  # materialize once so keyword scoring can reuse it
-        with _ThreadControl(self.deterministic and not self.speed_mode):
-            X_scaled, X_l2 = self._preprocess_text_transform(corpus)
-            idx = pd.RangeIndex(X_scaled.shape[0])
-            
-            # Get stereotype source (priority: metadata column > keywords > None)
-            stereotype_source = None
-            
-            # Priority 1: Metadata column (from fit_text)
-            if self.stereotype_column is not None and self.text_metadata_ is not None:
-                if self.stereotype_column in self.text_metadata_.columns:
-                    stereotype_source = self.text_metadata_[self.stereotype_column]
-            
-            # Priority 2: Keyword scores (recompute on new corpus)
-            elif self.stereotype_keywords is not None:
-                X_tfidf = self.vectorizer_.transform(corpus)
-                keyword_scores = self._compute_keyword_scores(
-                    X_tfidf, corpus, self.stereotype_keywords
-                )
-                stereotype_source = pd.Series(keyword_scores)
+    def transform_text(
+        self,
+        corpus: Iterable[str],
+        text_metadata: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """
+        Transform text corpus.
 
-            ranks = self._score_with_fitted(X_scaled, X_l2, idx, stereotype_source)
-
-            # Add Shapley formative rankings aligned to the current data index
-            if self.shapley_mode:
-                shapley_ranks = self._compute_shapley_formative_ranks().reindex(idx)
-                ranks = pd.concat([ranks, shapley_ranks], axis=1)
-
-            return ranks
+        ``text_metadata``, one row per document, supplies the stereotype_column
+        for documents the model was not fitted on (v0.8.3). Through v0.8.2 this
+        method duplicated the internal text transform; it now calls it.
+        """
+        return self._transform_text(corpus, False, text_metadata)
 
     def fit_transform_text(
         self,
@@ -3698,7 +4218,7 @@ class DataTypical:
             "shapley_mode","shapley_n_permutations","shapley_top_n",
             "shapley_early_stopping_patience","shapley_early_stopping_tolerance",
             "shapley_compute_formative","fast_mode","archetypal_method",
-            "formative_method", "explanation_method",
+            "formative_method", "explanation_method", "explanation_game",
             # v0.8.0: feature_weights was missing, so from_config(to_config())
             # silently dropped it and produced a different fit. On a five-feature
             # frame that moved archetypal_rank by 0.33 and prototypical_rank by
@@ -4407,7 +4927,15 @@ class DataTypical:
         X_scaled_sp = _sparse_minmax_0_1_nonneg(X_tfidf)
         self._text_scaled_fit_ = X_scaled_sp
         X_l2 = _sparse_l2_normalize_rows(X_scaled_sp)
-        
+
+        # v0.8.3: what transform needs to treat documents as this fit did. The
+        # maxima are taken from the corpus as transform() vectorises it, so
+        # transforming the training corpus divides by exactly the numbers it
+        # always did and its ranks do not move by a bit.
+        self._text_doc_hashes_ = np.array(
+            [_document_key(doc) for doc in corpus_list], dtype="S16")
+        self._text_col_max_ = _sparse_column_max(self.vectorizer_.transform(corpus_list))
+
         return X_scaled_sp, X_l2
 
     def _preprocess_text_transform(self, corpus: Iterable[str]) -> Tuple[ArrayLike, ArrayLike]:
@@ -4416,7 +4944,28 @@ class DataTypical:
         if sp is None:
             raise ImportError("scipy is required for text path.")
         X_tfidf = self.vectorizer_.transform(list(corpus))
-        X_scaled_sp = _sparse_minmax_0_1_nonneg(X_tfidf)
+        # v0.8.3: scaled by the training corpus's maxima, as tabular transform
+        # scales by the training range. Each corpus used to be scaled by its
+        # own, so one new document's terms all became 1.0 and a document's
+        # weights depended on which others were transformed with it. A fit
+        # saved before v0.8.3 kept no maxima and is scaled the old way.
+        col_max = getattr(self, "_text_col_max_", None)
+        X_scaled_sp = _sparse_minmax_0_1_nonneg(X_tfidf, col_max)
+        if col_max is not None:
+            over = X_scaled_sp.data > 1.0 + 1e-9
+            if over.any():
+                rows = np.repeat(np.arange(X_scaled_sp.shape[0]),
+                                 np.diff(X_scaled_sp.indptr))[over]
+                warnings.warn(
+                    f"{int(over.sum())} term weight(s) in "
+                    f"{np.unique(rows).size} of {X_scaled_sp.shape[0]} "
+                    "document(s) exceed the largest weight that term had in "
+                    "the training corpus and are clipped to it, as tabular "
+                    "transform() clips to the training range. Refit on a corpus "
+                    "covering these documents if they matter.",
+                    RuntimeWarning, stacklevel=4
+                )
+                X_scaled_sp.data[over] = 1.0
         X_l2 = _sparse_l2_normalize_rows(X_scaled_sp)
         return X_scaled_sp, X_l2
 
@@ -4716,16 +5265,7 @@ class DataTypical:
         
         # ---- Helper: archetypal "cornerness" score
         def _corner_scores(Xe: np.ndarray) -> np.ndarray:
-            eps = 1e-12
-            col_min, col_max = Xe.min(axis=0), Xe.max(axis=0)
-            hits_edge = (col_min <= eps) & (col_max >= 1.0 - eps)
-            idxs = np.where(hits_edge)[0]
-            if idxs.size >= 2:
-                var = Xe[:, idxs].var(axis=0)
-                take = idxs[np.argsort(-var)[:2]]
-            else:
-                var = Xe.var(axis=0)
-                take = np.argsort(-var)[:2] if Xe.shape[1] >= 2 else np.array([0])
+            take = _corner_feature_indices(Xe)
             X2 = Xe[:, take] if take.size else Xe[:, :1]
             m = np.minimum(X2, 1.0 - X2)
             dmin = np.sqrt(np.sum(m * m, axis=1))
@@ -4762,18 +5302,20 @@ class DataTypical:
             forbidden = set(order[:m])
 
         if run_proto:
-            # ---- Compute kNN density for prototype selection
-            dens = _knn_density_cosine(Xl2, k=10)
-
             # ---- Prototypes via CELF with optional density weighting
             if self.verbose:
                 print(f"\nFitting prototypes: Facility Location (k={self.n_prototypes})")
 
-            # Determine if density weighting is enabled
-            density_weighted_fl = bool(getattr(self, "density_weighted_fl", False))
-            density_k = int(getattr(self, "density_k", 10))
-            density_clip_neg = bool(getattr(self, "density_clip_neg", True))
-            weights = dens if density_weighted_fl else None
+            # v0.8.3: the kNN density is computed only when it weights the
+            # selection. It used to be computed on every fit, a blocked pass
+            # over all n^2 pairs, and then discarded, and the density_k and
+            # density_clip_neg settings it was meant to take were read and
+            # ignored (it always used k=10 and clipped).
+            weights = None
+            if bool(getattr(self, "density_weighted_fl", False)):
+                weights = _knn_density_cosine(
+                    Xl2, k=int(getattr(self, "density_k", 10)),
+                    clip_neg=bool(getattr(self, "density_clip_neg", True)))
 
             # Run facility location selector (it handles similarity matrix internally)
             selector = FacilityLocationSelector(
@@ -5009,17 +5551,9 @@ class DataTypical:
 
         # ---- Compute ranks
         if run_arch:
-            eps = 1e-12
-            col_min = X_euc.min(axis=0)
-            col_max = X_euc.max(axis=0)
-            hits_edge = (col_min <= eps) & (col_max >= 1.0 - eps)
-            idxs = np.where(hits_edge)[0]
-            if idxs.size >= 2:
-                var = X_euc[:, idxs].var(axis=0)
-                take = idxs[np.argsort(-var)[:2]]
-            else:
-                var = X_euc.var(axis=0)
-                take = np.argsort(-var)[:2] if X_euc.shape[1] >= 2 else np.array([0])
+            # v0.8.3: the corner features are chosen by the helper the
+            # archetypal explanation game also uses, so the two cannot drift.
+            take = _corner_feature_indices(X_euc)
             X2 = X_euc[:, take] if take.size else X_euc[:, :1]
             m = np.minimum(X2, 1.0 - X2)
             dmin = np.sqrt(np.sum(m * m, axis=1))
@@ -5032,7 +5566,7 @@ class DataTypical:
             denom = math.sqrt(X2.shape[1]) if X2.shape[1] >= 1 else 1.0
             corner_score = 1.0 - np.clip(dmin / denom, 0.0, 1.0)
             archetypal_score = arch_wmax * 0.7 + corner_score * 0.3
-            _cleanup_memory(X2, col_min, col_max, corner_score)
+            _cleanup_memory(X2, corner_score)
         else:
             archetypal_score = np.full(n_samples_transform, np.nan)
 
@@ -5126,6 +5660,8 @@ __all__ = [
     "exact_explanations_archetypal",
     "exact_explanations_prototypical",
     "exact_explanations_stereotypical",
+    "exact_explanations_archetypal_fitted",
+    "exact_explanations_prototypical_fitted",
     "FacilityLocationSelector",
     "DataTypicalError",
     "ConfigError",

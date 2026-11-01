@@ -2,9 +2,9 @@
 
 ## Overview
 
-This document describes the DataTypical v0.8.2 tests: the pytest suite, which is the release gate, and the five older script suites covering unit testing, data modality detection, performance scaling, visualization, and end-to-end benchmarking.
+This document describes the DataTypical v0.8.3 tests: the pytest suite, which is the release gate, and the five older script suites covering unit testing, data modality detection, performance scaling, visualization, and end-to-end benchmarking.
 
-**Script suites:** 62 tests across 5 suites, 3-5 minutes in all  
+**Script suites:** 70 tests across 5 suites, 3-5 minutes in all  
 **pytest suite:** see the next section  
 **Reproducibility:** 100% deterministic with random_state=42
 
@@ -12,7 +12,7 @@ This document describes the DataTypical v0.8.2 tests: the pytest suite, which is
 
 ## The pytest suite (added in v0.8.0)
 
-This is the layer to run routinely, and it is the release gate: 914 tests,
+This is the layer to run routinely, and it is the release gate: 981 tests,
 100% statement coverage of both modules (measured as described under
 [Coverage](#coverage)), about two minutes end to end.
 
@@ -27,6 +27,7 @@ separately, as described further down.
 
 | module | what it covers |
 | --- | --- |
+| `test_v083.py` | everything new or fixed in v0.8.3: the explanation games on the fitted model against enumeration and against the ranks they decompose, `explanation_game='legacy'`, and the pre-release audit's fixes (formative ranks on `transform()`, text transforms, formative attributions, the `converged` flag, density weighting, and the heatmap's rows of zeros) |
 | `test_v082.py` | everything new or fixed in v0.8.2: the Numba guard and NumPy fallback, the cache probe, exact explanations against enumeration, the stereotypical halves agreeing, early stopping, and the visualisations on every fit type, at every size, in the house style |
 | `test_v081_defects.py` | regression tests for the v0.8.1 fixes |
 | `test_defects_v080.py` | regression tests for every defect fixed in v0.8.0, each reproducing the original failure |
@@ -42,8 +43,8 @@ separately, as described further down.
 | `test_final_coverage.py` | parallel backends, dtype fallbacks, degenerate geometry |
 | `test_viz_completion.py` | the visualization diagnostics that fire when explanations are missing |
 | `test_packaging.py` | release metadata consistency and staging parity |
-| `DataTypical_unit_test_suite.py` | the original 34 unit tests, still collected |
-| `DataTypical_autodetection_test_suite.py` | data type detection |
+| `DataTypical_unit_test_suite.py` | the original unit tests, 27 in seven groups, still collected |
+| `DataTypical_autodetection_test_suite.py` | data type detection, 7 tests, still collected |
 
 ### Coverage
 
@@ -61,7 +62,12 @@ kernels run as machine code and the line tracer cannot see them. Since v0.8.2
 `tests/conftest.py` sets `NUMBA_DISABLE_JIT=1` itself whenever coverage is
 measuring, so the commands above always give the published convention; an
 explicit `NUMBA_DISABLE_JIT` in the environment wins. With the JIT on, the same
-suite reports 95.8%.
+suite reports 96.1%.
+
+Before a release the suite also runs on both NumPy majors (see
+`pypi_staging/BUILD_INSTRUCTIONS.md`). For v0.8.3 it passed on NumPy 1.26.4
+(Python 3.12) and on NumPy 2.5.4 (Python 3.13), each in a fresh environment
+holding the newest release of every other dependency that it allowed.
 
 `.coveragerc` sets the source to the project root and filters the report down to
 `datatypical.py` and `datatypical_viz.py`. Every statement in both is covered;
@@ -86,18 +92,18 @@ python DataTypical_visualization_test_suite.py   # 16 figure checks
 ### Prerequisites
 
 ```bash
-# Install DataTypical
-pip install datatypical --break-system-packages
-
-# Install test dependencies (if not already installed)
-pip install numpy pandas matplotlib seaborn --break-system-packages
+# From the project root: the library's dependencies, plus pytest
+pip install -r requirements.txt pytest
 ```
+
+Every suite puts the project root first on `sys.path` itself, so run from a
+checkout it tests that checkout's `datatypical.py`, whatever is installed.
 
 ### Running All Tests
 
 ```bash
-# From project root directory
-cd /path/to/datatypical
+# From the tests directory of a checkout
+cd /path/to/datatypical/tests
 
 # Run each suite individually
 python DataTypical_unit_test_suite.py
@@ -123,7 +129,7 @@ Each test suite will report:
 
 **File:** `DataTypical_unit_test_suite.py`  
 **Duration:** 30-45 seconds  
-**Tests:** 19 tests across 6 modules
+**Tests:** 27 tests across 7 modules
 
 #### What It Tests
 
@@ -135,6 +141,7 @@ Each test suite will report:
 | **Dual-Perspective** | 3 | Tests actual vs formative ranking computations |
 | **Explainability** | 3 | Validates `get_shapley_explanations()` and `get_formative_attributions()` |
 | **Edge Cases** | 6 | Tests error handling, small datasets, missing values, mode validation |
+| **selected_significance** | 8 | Each significance type alone, invalid values, ranks equal to a full run, with Shapley, reproducibility |
 
 #### Key Features
 
@@ -257,7 +264,7 @@ Detailed Results:
 #### Performance Metrics
 
 The suite prints the speed-ups it measures rather than asserting a figure.
-For reference, measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22 with ten features:
+For reference, measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22 with ten features, with v0.8.2 (the figures stand for v0.8.3):
 
 | Samples | Shapley fit, `fast_mode=False` | `fast_mode=True` | ratio |
 | --- | --- | --- | --- |
@@ -467,26 +474,17 @@ DataTypical v0.7 VALIDATED
 
 ## Configuration & Customization
 
-### Updating File Paths
+### File Paths
 
-All test suites include this line at the top:
-
-```python
-sys.path.insert(0, '/my/project')  # update your path here
-```
-
-**Update this to your DataTypical installation directory:**
+No path needs editing. Each suite finds the project root from its own location
+and puts it first on `sys.path`:
 
 ```python
-# Example for local development
-sys.path.insert(0, '/home/username/datatypical')
-
-# Example for conda environment
-sys.path.insert(0, '/home/username/miniconda3/envs/myenv/lib/python3.10/site-packages')
-
-# Example for system installation
-# No need to modify if installed globally
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ```
+
+so run from a checkout it tests that checkout's `datatypical.py`, whatever
+version is installed, and its banner prints the version it imported.
 
 ### Adjusting Test Parameters
 
@@ -541,13 +539,14 @@ random_state=YOUR_SEED
 ModuleNotFoundError: No module named 'datatypical'
 ```
 
-**Solution:**
+**Solution:** run the suites from the `tests` folder of a checkout, which puts
+`datatypical.py` on the path for them. To use an installed copy elsewhere:
 ```bash
 # Verify installation
 pip show datatypical
 
 # Reinstall if needed
-pip install datatypical --break-system-packages
+pip install datatypical
 
 # Check Python path
 python -c "import sys; print('\n'.join(sys.path))"
@@ -750,12 +749,12 @@ def test_new_feature():
 
 | Suite | Tests | Typical Duration | Max Duration |
 |-------|-------|------------------|--------------|
-| Unit Tests | 19 | 30-45s | 60s |
+| Unit Tests | 27 | 30-45s | 60s |
 | Autodetection | 7 | 20-30s | 45s |
 | Scaling | 12 | 60-90s | 120s |
 | Visualization | 16 | 15-25s | 40s |
 | Benchmarks | 8 | 40-60s | 90s |
-| **TOTAL** | **62** | **3-4 min** | **6 min** |
+| **TOTAL** | **70** | **3-4 min** | **6 min** |
 
 ### Hardware Considerations
 
@@ -803,7 +802,8 @@ shapley_n_permutations=100  # Thorough
 
 | DataTypical Version | Test Suite Version | Notes |
 |--------------------|--------------------|-------|
-| v0.8.2 | Current | All tests pass |
+| v0.8.3 | Current | All tests pass |
+| v0.8.2 | Previous | `test_v083.py` pins the 0.8.3 changes |
 | v0.7.x | Script suites only | The pytest suite starts at v0.8.0 |
 | v0.6.x | Backward compatible | Unit tests verify v0.6 behavior |
 | v0.5.x | Partial | Autodetection not available |
@@ -921,6 +921,13 @@ Steps to Reproduce:
 
 ## Changelog
 
+### v0.8.3 (2026-10-26)
+- pytest suite: 981 tests, 100% statement coverage with the JIT off, 96.1% on;
+  `test_v083.py` added
+- Script suites: 70 tests (the unit suite has grown to 27 in seven groups);
+  their banners print the version they import rather than a typed one
+- Passes on NumPy 1.26.4 and NumPy 2.5.4
+
 ### v0.7.0 (2026-01-21)
 - Complete test suite refactoring
 - All tests use public API only
@@ -946,6 +953,6 @@ This test suite is part of DataTypical and is distributed under the same MIT Lic
 
 ---
 
-**Last Updated:** October 22, 2026  
-**Test Suite Version:** 0.8.2  
-**DataTypical Version:** 0.8.2
+**Last Updated:** October 26, 2026  
+**Test Suite Version:** 0.8.3  
+**DataTypical Version:** 0.8.3

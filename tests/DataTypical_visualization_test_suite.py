@@ -1,5 +1,5 @@
 """
-DataTypical v0.8.2 - Visualization Test Suite
+DataTypical - Visualization Test Suite
 ==========================================
 Complete test coverage for all visualization functions.
 Run this after unit tests and benchmarks to validate visualization layer.
@@ -19,7 +19,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
-from datatypical import DataTypical
+from datatypical import DataTypical, __version__
 from datatypical_viz import (
     significance_plot,
     heatmap, 
@@ -27,7 +27,7 @@ from datatypical_viz import (
 )
 
 print("="*80)
-print("DataTypical v0.8.2 - Visualization Test Suite")
+print(f"DataTypical v{__version__} - Visualization Test Suite")
 print("="*80)
 
 # ============================================================================

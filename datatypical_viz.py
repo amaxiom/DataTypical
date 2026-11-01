@@ -1,5 +1,5 @@
 """
-DataTypical v0.8.2 - Visualization Module
+DataTypical v0.8.3 - Visualization Module
 ========================================
 
 Publication-quality visualizations for dual-perspective analysis:
@@ -946,6 +946,12 @@ def heatmap(
         # Use get_shapley_explanations to handle shapley_top_n subsampling
         Phi_subset_list = []
         row_labels = []
+        # v0.8.3: which rows the fit explained. A row used to count as
+        # explained only if some value in it was non-zero, so under
+        # shapley_top_n an explanation that is genuinely all zero (a sample
+        # at a numeric stereotype_target, whose game is scaled by its distance
+        # from it) was dropped, and the plot blamed shapley_top_n.
+        explained = getattr(dt_fitted, '_explained_rows_', None)
 
         for df_idx in top_samples_df_indices:
             try:
@@ -953,8 +959,14 @@ def heatmap(
                 explanations = dt_fitted.get_shapley_explanations(df_idx)
                 shapley_values = explanations[significance]
 
-                # Only include if we have valid data
-                if np.any(shapley_values != 0) or not hasattr(dt_fitted, 'shapley_top_n') or dt_fitted.shapley_top_n is None:
+                # Only include rows the fit explained
+                if explained is not None:
+                    computed = bool(np.all(explained[dt_fitted.train_index_.get_loc(df_idx)]))
+                else:
+                    # a fit saved before v0.8.3 does not record them
+                    computed = (np.any(shapley_values != 0) or not hasattr(dt_fitted, 'shapley_top_n')
+                                or dt_fitted.shapley_top_n is None)
+                if computed:
                     Phi_subset_list.append(shapley_values)
                     row_labels.append(_sample_label(df_idx, sample_labels, max_label_length))
             except (IndexError, KeyError):
@@ -975,14 +987,21 @@ def heatmap(
 
         Phi_subset = np.array(Phi_subset_list)
 
-        # WARNING: Check for zero Shapley values when using formative ordering
+        # Formative instances need not be among the samples explained. v0.8.3:
+        # the rows left out are reported as such; rows of zeros that were
+        # explained are reported separately, since shapley_top_n is not their
+        # cause.
         if order == 'formative':
-            zero_count = (Phi_subset == 0).all(axis=1).sum()
-            if zero_count > 0:
-                print(f"\nWarning: {zero_count}/{len(row_labels)} top formative {significance} instances have zero Shapley values")
+            skipped = len(top_samples_df_indices) - len(row_labels)
+            if skipped > 0:
+                print(f"\nWarning: {skipped}/{len(top_samples_df_indices)} top formative {significance} instances have no explanations and are left out")
                 print(f"  This occurs when a formative instance is not in the top {significance} instances")
                 print(f"  (determined by shapley_top_n parameter)")
                 print(f"  These instances CREATE structure but are not themselves highly {significance}")
+            zero_count = (Phi_subset == 0).all(axis=1).sum()
+            if zero_count > 0:
+                print(f"\nNote: {zero_count}/{len(row_labels)} top formative {significance} instances have zero Shapley values")
+                print(f"  Their explanations were computed and are zero for every feature")
 
     else:
         # Custom sample list provided: positions, kept in the order given

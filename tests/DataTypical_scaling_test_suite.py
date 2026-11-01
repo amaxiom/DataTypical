@@ -1,5 +1,5 @@
 """
-DataTypical v0.8.2 - Performance and Scaling Test Suite
+DataTypical - Performance and Scaling Test Suite
 ======================================================
 Tests performance scaling across dataset sizes and configuration options:
 1. fast_mode presets (True vs False)
@@ -24,10 +24,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 import time
-from datatypical import DataTypical
+from datatypical import DataTypical, __version__
 
 print("=" * 80)
-print("DataTypical v0.8.2 - Performance and Scaling Test Suite")
+print(f"DataTypical v{__version__} - Performance and Scaling Test Suite")
 print("=" * 80)
 print("\nRUNNING PERFORMANCE TEST SUITE")
 

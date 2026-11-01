@@ -401,7 +401,11 @@ class TestExactExplanationsInTheFit:
             assert dt.shapley_info_["%s_explanations" % kind]["method"] == "exact"
 
     def test_they_do_not_depend_on_the_seed(self, df_small):
-        a, b = DataTypical(random_state=1, **self.KW), DataTypical(random_state=99, **self.KW)
+        # v0.8.3: the 0.8.2 games read only the data, so this holds bit for bit
+        # under explanation_game='legacy'. The fitted games read the fitted
+        # model too; see test_v083 for how they depend on the seed.
+        a = DataTypical(random_state=1, explanation_game="legacy", **self.KW)
+        b = DataTypical(random_state=99, explanation_game="legacy", **self.KW)
         _quiet(a.fit, df_small)
         _quiet(b.fit, df_small)
         for kind in ("archetypal", "prototypical", "stereotypical"):

@@ -7,6 +7,176 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [0.8.3] - 2026-10-26
+
+The archetypal and prototypical feature-level explanations now play games
+built from the significance scores and the fitted model, so a sample's
+attributions decompose its rank. **This changes numbers**: every archetypal and
+prototypical explanation. The ranks, the formative values and the
+stereotypical explanations are unchanged. The release also fixes defects found
+in a pre-release audit of the code, listed under Fixed; none of them changes a
+`fit_transform()` result.
+
+### Changed
+
+- **The archetypal and prototypical explanation games did not follow the ranks
+  they explain.** In 0.8.2 both were defined feature by feature without
+  reference to the archetypes or prototypes: the archetypal game was the mean
+  closeness of a sample's values to a bound of their features, and the
+  prototypical game the variance of its values. Across the three datasets of
+  the DataTypical paper (Wine, MUTAG and BIOSSES) the archetypal game's value
+  correlated with `archetypal_rank` at Spearman 0.27, 0.58 and 0.04, and the
+  prototypical game's with `prototypical_rank` at -0.18, -0.35 and -0.81. A
+  sample with an uneven profile scores high on a variance game, and an uneven
+  profile is close to the opposite of being representative. The new games,
+  `explanation_game='fitted'` (the default), are the scores themselves with the
+  fitted model held fixed:
+
+  - **Archetypal.** `archetypal_rank` is `0.7 * wmax + 0.3 * corner`. The
+    membership share `wmax` comes from the least-squares projection onto the
+    archetypes, which is linear, so it splits into one exact term per feature
+    (for NMF, the projection on the solver's active set, rescaled to its
+    weight). The corner term reads two features and is solved as a game on
+    two players. The attributions sum to `archetypal_rank` to within
+    floating-point rounding: 5e-11, the rank's own rounding, on five of the
+    paper's six datasets, and 5e-10 on the Statlog Shuttle data.
+  - **Prototypical.** `prototypical_rank` is half Euclidean closeness to the
+    nearest prototype, in units of the 95th-percentile distance d95, and half
+    cosine similarity to the most similar prototype. The game keeps both
+    halves and squares the distance, which makes it additive:
+    `phi_f = 0.5 * (1/d - (x_f - p_f)^2 / d95^2) + 0.5 * xhat_f * qhat_f`.
+    The attributions sum to `0.5 * (1 - dist^2 / d95^2) + 0.5 * cos`, which
+    differs from the score only in how the distance enters.
+
+  On the same three datasets the archetypal game's value correlates with
+  `archetypal_rank` at 1.000 and the prototypical game's with
+  `prototypical_rank` at 0.999, 0.999 and 0.995. The constants the games read
+  from the training set, the corner features and d95, come from every row even
+  when `shapley_top_n` explains only some.
+
+- **A prototype now has an explanation.** Under a game of closeness alone, a
+  prototype, which matches itself on every feature, would get a flat one, and
+  the prototypes are the samples at the top of `prototypical_rank`. The cosine
+  half credits the features that carry its similarity.
+
+- Exact ties between prototypes at the same distance, common with count data,
+  go to the first of them on every platform: the squared distances are rounded
+  to twelve decimals before the comparison.
+
+### Added
+
+- **`explanation_game`**, `'fitted'` (default) or `'legacy'`. `'legacy'`
+  plays the 0.8.2 games, bit for bit under `explanation_method='exact'`, and
+  with `explanation_method='monte_carlo'` reproduces a pre-0.8.2 result.
+  `fit()` rejects any other value with a `ConfigError`, and `to_config()`
+  records it. `shapley_info_` records the game each stage played.
+- Public functions `exact_explanations_archetypal_fitted(X, archetypes,
+  nmf_model=None, corner_features=None)` and
+  `exact_explanations_prototypical_fitted(X, prototypes, prototypes_l2=None,
+  distance_scale=None)`. `exact_explanations_archetypal` and
+  `exact_explanations_prototypical` keep the 0.8.2 games.
+- `explanation_method='monte_carlo'` samples whichever game is selected. The
+  fitted prototypical game is additive, so every permutation gives its exact
+  value; the fitted archetypal game varies between permutations only in the
+  corner term. A value function can now ask the feature-permutation engine for
+  the coalition's feature indices (`context['with_features']`).
+
+### Fixed
+
+- **`transform()` gave rows the model was not fitted on the formative ranks of
+  other rows.** The `*_shapley_rank` columns were aligned to the transformed
+  rows by index label alone, so a new row received those of whichever training
+  row shared its label: with the default RangeIndex, rows 0 to 9 of a test set
+  got training rows 0 to 9's values. A formative value measures how a training
+  sample shapes the fitted structure, and a new sample has none. A row now
+  keeps formative ranks only when it is a training sample, the same label and
+  the same feature values (missing in the same places), and gets NaN
+  otherwise, with a `RuntimeWarning` saying how many. For text, a document
+  must be the training document at the same position. Transforming the
+  training data, a subset of it or a reordering gives the values as before.
+  The two documented workflows that read a new batch's formative ranks and
+  explanations (`docs/EXAMPLES.md`, Example 3, and
+  `docs/INTERPRETATION_GUIDE.md`, Use Case 4) now fit on the history and the
+  batch together, which is how a new sample gets either.
+- **`transform_text()` scaled new documents by their own corpus.** Each
+  transformed corpus was divided by its own term maxima, so a single new
+  document's terms all became 1.0, and a document's weights depended on which
+  others were transformed with it. New documents are now divided by the
+  training corpus's maxima, as tabular `transform()` scales by the training
+  range, and a weight above one is clipped to it with a warning. The training
+  corpus itself is divided by exactly the numbers it always was, so
+  `fit_transform_text()` results are unchanged bit for bit.
+- **`transform_text()` ranked new documents by the training metadata.** With a
+  `stereotype_column` read from `text_metadata`, the fit's metadata was used
+  for whatever corpus was transformed: by position for one of the same length,
+  so new documents were ranked by the training documents' values, and with a
+  pandas length error otherwise. `transform_text()` and `transform()` now take
+  `text_metadata=` for the documents being transformed, and raise
+  `ConfigError` for documents that are not the training corpus without it.
+  `transform_text()` also no longer duplicates the internal text transform.
+- **`get_formative_attributions()` raised whenever the archetypal formative
+  values were absent**, blaming `fast_mode`, although with
+  `selected_significance='prototypical'` or `'stereotypical'` the selected
+  type's values had been computed. It now returns whichever were computed and
+  raises only when none were.
+- **A sampled Shapley run reported `converged=True` whenever it used all its
+  permutations**, which at the default settings is every run (early stopping
+  cannot fire below 120 permutations), including runs whose `split_half_rho`
+  showed a ranking of noise. `converged` in `shapley_info_` now means early
+  stopping found the estimate stable. Exact results report `True` as before.
+- **A k-nearest-neighbour density was computed on every fit and discarded**, a
+  blocked pass over all pairs of samples. It is now computed only when it
+  weights the prototype selection (the undocumented `density_weighted_fl`
+  attribute), and then with the `density_k` and `density_clip_neg` settings it
+  was meant to take, which were read and ignored.
+- **`heatmap()` dropped explained rows of zeros.** Under `shapley_top_n` a row
+  counted as explained only if some value in it was non-zero, so a sample
+  whose explanation is genuinely zero (one at a numeric `stereotype_target`)
+  was left out and the plot blamed `shapley_top_n`. The fit now records which
+  rows it explained (`_explained_rows_`), and the plot shows exactly those; a
+  fit saved by an earlier version falls back to the old test. With
+  `order='formative'` the rows left out and the rows of zeros are reported
+  separately.
+- `FacilityLocationSelector` was a `@dataclass` with no fields, so every
+  selector compared equal to every other whatever its `n_prototypes`, and none
+  could be hashed. It is a plain class now.
+- **The declared matplotlib minimum was too low.** `requirements.txt` and the
+  package metadata asked for 3.3, but the visualisations call
+  `Colormap.resampled` and `matplotlib.colormaps.get_cmap`, which matplotlib
+  added in 3.6, so an install that met the stated minimum failed on the first
+  plot. The minimum is now 3.6.0.
+
+### Internal
+
+- The archetypal score and its explanation game choose the corner features
+  with one helper, `_corner_feature_indices`, so they cannot drift apart. The
+  arithmetic of the score is unchanged.
+
+### Performance
+
+- The fitted games cost 0.3 to 2.2 ms (archetypal) and 0.5 to 5.5 ms
+  (prototypical) at 1,000 to 10,000 samples and ten features, against 0.04 to
+  1.9 ms for the 0.8.2 games, measured on the machine described under 0.8.2.
+  Against a Shapley fit of 0.5 to 20 seconds that is lost in the noise, and
+  the 0.8.2 fit timings in the README stand.
+
+### Tests
+
+- The suite has 981 tests, 100% statement coverage of both modules, measured
+  with `NUMBA_DISABLE_JIT=1` as for 0.8.2. `tests/test_v083.py` checks both
+  closed forms against enumeration of every coalition, the archetypal
+  attributions against `archetypal_rank` on the PCHA, NMF and convex-hull
+  backends, the prototypical ones against their squared-distance score, that
+  `'legacy'` reproduces the 0.8.2 values, that sampling converges to the exact
+  values under either game, that subsampling keeps the training set's
+  constants, that identical samples get identical explanations, and the tie
+  rule. It also pins each fix above: new rows and changed rows get NaN
+  formative ranks while training rows, subsets and reorderings keep theirs;
+  a new document is scaled as the fit scaled it and the training corpus bit
+  for bit as before; new documents need their own metadata; and the
+  attributions, the `converged` flag, the density weighting, the selector's
+  identity and the heatmap's rows of zeros.
+
 ## [0.8.2] - 2026-10-22
 
 Fixes for an import that could hang and a Numba fallback that did not fall

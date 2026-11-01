@@ -5,7 +5,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/datatypical.svg)](https://pypi.org/project/datatypical/)
-[![Tests](https://img.shields.io/badge/tests-914%20passing-21918c.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-981%20passing-21918c.svg)](tests/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-22a884.svg)](tests/)
 
 DataTypical analyzes datasets through three complementary lenses: archetypal (extreme), prototypical (representative), and stereotypical (target-like), with Shapley value explanations revealing why instances matter and which ones create your dataset's structure.
@@ -152,7 +152,10 @@ publication-mode fit samples nothing. Measured on an Intel Core Ultra 9 285K
 values and explanations for all three significance types. With both computed
 by permutation sampling instead (`'monte_carlo'`, 100 permutations, as through
 v0.7.7), the same 1,000-sample Shapley fit took 445 seconds, and 103 with
-`fast_mode`.
+`fast_mode`. These are v0.8.2 timings, and they stand for v0.8.3: its
+explanation games add a few milliseconds to an exact fit, and it no longer
+computes, and discards, a nearest-neighbour pass over all pairs of samples on
+every fit.
 
 Of the Shapley computations, the prototypical formative values are the one
 that grows as n^2, so they come to dominate as n grows; the other formative
@@ -218,6 +221,7 @@ DataTypical(
     # How the Shapley values are computed
     formative_method='exact',     # or 'monte_carlo' for permutation sampling
     explanation_method='exact',   # or 'monte_carlo' for permutation sampling
+    explanation_game='fitted',    # or 'legacy' for the 0.8.2 explanation games
     shapley_top_n=None,           # explain only the top N (or fraction) of samples
     shapley_n_permutations=100,   # used only by 'monte_carlo' (30 in fast_mode)
 
@@ -352,34 +356,59 @@ sampling will compute, before starting it.
 ### Feature-level explanations
 
 The explanations, which feature makes each sample significant, are Shapley
-values too: one game per sample, played over its features. **Since v0.8.2 they
-are exact by default** (`explanation_method='exact'`). Each of the three games
-reduces to a mean game or a variance game over the features, and both have
-closed forms, so the explanations cost O(d) per sample and do not depend on
-`random_state`. Each closed form is verified against exhaustive coalition
-enumeration.
+values too: one game per sample, played over its features. **Since v0.8.3 the
+archetypal and prototypical games are the significance scores themselves**,
+with the fitted archetypes and prototypes held fixed
+(`explanation_game='fitted'`, the default), so a sample's attributions
+decompose its rank:
+
+- **Archetypal.** `archetypal_rank` is 0.7 times the sample's largest share of
+  archetype membership plus 0.3 times a corner term on two features. The
+  membership share comes from a linear projection onto the archetypes, so each
+  feature's part of it is exact, and the corner term is a game on two players.
+  The attributions sum to `archetypal_rank`.
+- **Prototypical.** `prototypical_rank` is half closeness to the nearest
+  prototype, in units of the 95th-percentile distance, and half cosine
+  similarity to the most similar prototype. The game keeps both halves and
+  squares the distance, which makes it additive. The attributions sum to that
+  squared-distance form of the score, which orders samples almost exactly as
+  the rank does (Spearman 0.99 to 1.00 on the paper's three datasets).
+- **Stereotypical.** Unchanged: the sample's distance from the target, as a
+  weight, times the mean magnitude of its values over the coalition.
+
+**Since v0.8.2 all three are exact by default** (`explanation_method='exact'`):
+each has a closed form, verified against exhaustive coalition enumeration, so
+the explanations cost O(d) per sample and need no permutations.
 
 That matters most for wide data. On a corpus of 100 documents and 1,277 terms,
 sampled explanations at the default 100 permutations took about twenty-five
-minutes per significance type. The exact ones take 3 to 6 milliseconds per
-significance type, measured on a synthetic corpus of the same shape (100
-documents by 1,381 terms), and the whole Shapley fit 0.6 seconds.
+minutes per significance type. The exact ones take milliseconds per
+significance type, and the whole Shapley fit under a second.
 
 ```python
-from datatypical import (exact_explanations_archetypal,
-                         exact_explanations_prototypical,
+from datatypical import (exact_explanations_archetypal_fitted,
+                         exact_explanations_prototypical_fitted,
                          exact_explanations_stereotypical)
 
-exact_explanations_archetypal(scaled_X)
-exact_explanations_prototypical(scaled_X)
+exact_explanations_archetypal_fitted(scaled_X, dt.H_, dt.nmf_model_)
+exact_explanations_prototypical_fitted(scaled_X, dt.prototype_features_)
 exact_explanations_stereotypical(scaled_X, target_values, target='max')
 ```
 
-Pass `explanation_method='monte_carlo'` to reproduce a result computed before
-v0.8.2. The sampled values estimate the same quantities, but at 100
-permutations they differ from the exact values by a median of 15 to 27 per cent,
-and name a different most important feature for 11 to 26 per cent of
-samples (measured on 300 rows of the MAGIC telescope data).
+Through v0.8.2 the archetypal and prototypical games were defined feature by
+feature, without the archetypes or prototypes, and their values did not follow
+the ranks: on the paper's datasets the prototypical one, the variance of a
+sample's own values, correlated with `prototypical_rank` at -0.18 to -0.81.
+`explanation_game='legacy'` keeps them, and `exact_explanations_archetypal` and
+`exact_explanations_prototypical` compute them, to reproduce an earlier result.
+
+Pass `explanation_method='monte_carlo'` with `explanation_game='legacy'` to
+reproduce a result computed before v0.8.2. With the 0.8.2 games the sampled
+values estimate the same quantities, but at 100 permutations they differ from
+the exact values by a median of 15 to 27 per cent, and name a different most
+important feature for 11 to 26 per cent of samples (measured on 300 rows of the
+MAGIC telescope data). The fitted prototypical game is additive, so sampling
+it returns its exact values.
 
 ### Reading the ranks
 
@@ -621,7 +650,7 @@ results = dt.fit_transform(node_features, edges=edges)
 - Pandas ≥ 1.3
 - SciPy ≥ 1.7
 - scikit-learn ≥ 1.0
-- Matplotlib ≥ 3.3
+- Matplotlib ≥ 3.6
 - Seaborn ≥ 0.11
 - Numba ≥ 0.55 (compiled kernels; without it a NumPy fallback runs, with a warning)
 - NetworkX ≥ 2.6 (graph topology features)
@@ -643,7 +672,7 @@ If you use DataTypical in your research, please cite:
   title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
   year = {2026},
   url = {https://github.com/amaxiom/DataTypical},
-  version = {0.8.2}
+  version = {0.8.3}
 }
 ```
 
@@ -676,9 +705,33 @@ This dual perspective transforms instance significance from pure ranking into ca
 
 ## Development Status
 
-**Current Version**: 0.8.2
+**Current Version**: 0.8.3
 
-**Recent Updates (v0.8.2)**, see [CHANGELOG.md](CHANGELOG.md):
+**Recent Updates (v0.8.3)**, see [CHANGELOG.md](CHANGELOG.md):
+- **The archetypal and prototypical explanations now decompose the ranks they
+  explain.** Their games are the significance scores with the fitted
+  archetypes and prototypes held fixed (new `explanation_game`, default
+  `'fitted'`): the archetypal attributions sum to `archetypal_rank`, and the
+  prototypical ones to the prototypical score with its distance squared. The
+  0.8.2 games did not follow the ranks, and the prototypical one ran against
+  `prototypical_rank`. This **changes every archetypal and prototypical
+  explanation**; `explanation_game='legacy'` reproduces them. New public
+  functions `exact_explanations_archetypal_fitted` and
+  `exact_explanations_prototypical_fitted`. See
+  [Feature-level explanations](#feature-level-explanations).
+- **`transform()` on new rows no longer reports other rows' formative ranks.**
+  It used to align them by index label alone, so a new row got those of the
+  training row sharing its label; a row that is not a training sample now gets
+  NaN, with a warning. Text transforms now scale new documents by the training
+  corpus and take `text_metadata=` for them. Fixes from a pre-release audit,
+  none of which changes a `fit_transform()` result; see the CHANGELOG.
+- pytest suite: 981 tests, 100% statement coverage of both modules, measured
+  with `NUMBA_DISABLE_JIT=1` because compiled kernels are invisible to the line
+  tracer. `tests/conftest.py` sets that whenever coverage is measuring, so the
+  figure cannot be taken the other way by accident; with the JIT active the
+  same suite reports 96.1%.
+
+**v0.8.2**, see [CHANGELOG.md](CHANGELOG.md):
 - **Fixed an import that could hang.** From a folder the user cannot write to,
   such as a system-wide Anaconda install on Windows, Numba's cache check
   retried up to 2**31 - 1 times. The folder is now tested with one real write,
@@ -706,11 +759,6 @@ This dual perspective transforms instance significance from pure ranking into ca
   stereotypical explanations drawn as zeros where none existed.
 - Added `__version__`, the one place the version is written down.
 - Declared `joblib` and `threadpoolctl`, which were imported but never declared.
-- pytest suite: 914 tests, 100% statement coverage of both modules, measured
-  with `NUMBA_DISABLE_JIT=1` because compiled kernels are invisible to the line
-  tracer. `tests/conftest.py` sets that whenever coverage is measuring, so the
-  figure cannot be taken the other way by accident; with the JIT active the
-  same suite reports 95.8%.
 
 **v0.8.1** fixes archetypal analysis on NumPy 2. `py_pcha` calls `np.mat`, removed in NumPy 2.0, so a fresh install of v0.8.0 could not run `archetypal_method='aa'` at all. Through v0.7.7 the same failure fell through to ConvexHull **silently**, so any `'aa'` result from v0.7.7 or earlier on NumPy 2 is a ConvexHull approximation. See [CHANGELOG.md](CHANGELOG.md).
 

@@ -1,5 +1,5 @@
 """
-DataTypical v0.8.2 - Comprehensive Unit Test Suite
+DataTypical - Comprehensive Unit Test Suite
 =================================================
 Tests organized into modules:
 1. Shapley Correctness Tests (via DataTypical API)
@@ -27,10 +27,10 @@ import pandas as pd
 import warnings
 warnings.filterwarnings('ignore')
 
-from datatypical import DataTypical, DataTypicalError
+from datatypical import DataTypical, DataTypicalError, __version__
 
 print("="*70)
-print("DataTypical v0.8.2 - Unit Test Suite")
+print(f"DataTypical v{__version__} - Unit Test Suite")
 print("="*70)
 
 # ============================================================================
@@ -1036,7 +1036,7 @@ if __name__ == "__main__":
     
     print("\n" + "="*80)
     if passed == total:
-        print("[OK] ALL UNIT TESTS PASSED - DataTypical v0.8.2 VALIDATED")
+        print(f"[OK] ALL UNIT TESTS PASSED - DataTypical v{__version__} VALIDATED")
     else:
         print("[FAIL] SOME TESTS FAILED - Review output above")
     print("="*80)

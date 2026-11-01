@@ -1,5 +1,5 @@
 """
-DataTypical v0.8.2 - Benchmark Suite
+DataTypical - Benchmark Suite
 ===================================
 Tests all three data modalities with realistic datasets.
 Validates fast_mode and shapley_compute_formative behavior.
@@ -26,10 +26,10 @@ import time
 import warnings
 warnings.filterwarnings('ignore')
 
-from datatypical import DataTypical
+from datatypical import DataTypical, __version__
 
 print("="*80)
-print("DataTypical v0.8.2 - Benchmark Suite")
+print(f"DataTypical v{__version__} - Benchmark Suite")
 print("="*80)
 
 # ============================================================================
@@ -648,7 +648,7 @@ print("\n" + "="*80)
 if failed == 0:
     print("[OK] ALL BENCHMARKS PASSED")
     print("="*80)
-    print("\nDataTypical v0.8.2 VALIDATED")
+    print(f"\nDataTypical v{__version__} VALIDATED")
     print("  - All modalities working (Tabular, Text, Graph)")
     print("  - Fast mode optimizations functional")
     print("  - Publication mode dual-perspective working")
