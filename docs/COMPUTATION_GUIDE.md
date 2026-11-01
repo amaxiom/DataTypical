@@ -1,4 +1,4 @@
-# DataTypical v0.8.2 - Computation Guide
+# DataTypical v0.8.3 - Computation Guide
 
 ## Table of Contents
 
@@ -38,6 +38,13 @@ The key innovation is the Shapley-based dual perspectives introduced in v0.6:
 - **Formative significance**: Samples that CREATE the archetypal/prototypical/stereotypical structure (influence-based)
 - **Explanations**: Feature-level attributions explaining WHY each sample is significant
 
+Version 0.8.3 makes the archetypal and prototypical **explanation games** the
+significance scores themselves, with the fitted archetypes and prototypes held
+fixed (`explanation_game='fitted'`, the default), so the archetypal attributions
+sum to `archetypal_rank` and the prototypical ones to the prototypical score
+with its distance squared. The 0.8.2 games, kept as `explanation_game='legacy'`,
+did not follow the ranks. See [Exact Computation](#exact-computation-the-default).
+
 Version 0.8.2 computes the feature-level **explanations** exactly by default
 (`explanation_method='exact'`): all three explanation games have closed forms,
 so explanations no longer depend on the seed and cost O(d) per sample instead
@@ -75,11 +82,11 @@ datatypical` installs all of them.
 | `pandas` | >= 1.3 | Data handling and indexing |
 | `scipy` | >= 1.7 | Sparse matrices, ConvexHull |
 | `scikit-learn` | >= 1.0 | NMF, MinMaxScaler, TfidfVectorizer |
-| `matplotlib` | >= 3.3 | Visualization |
+| `matplotlib` | >= 3.6 | Visualization (`Colormap.resampled`, `colormaps.get_cmap`) |
 | `seaborn` | >= 0.11 | Visualization |
 | `numba` | >= 0.55 | JIT compilation of distance functions |
 | `networkx` | >= 2.6 | Graph topology features |
-| `py_pcha` | >= 0.1 | Principal Convex Hull Analysis |
+| `py_pcha` | >= 0.1.3 | Principal Convex Hull Analysis |
 | `joblib` | >= 1.0 | Parallel permutation batches |
 | `threadpoolctl` | >= 2.0 | Thread control under `deterministic=True` |
 
@@ -108,7 +115,7 @@ still imports when they are missing, with defined consequences:
 ```python
 import datatypical
 
-datatypical.__version__            # '0.8.2'
+datatypical.__version__            # '0.8.3'
 datatypical.NUMBA_AVAILABLE        # True when the compiled kernels are in use
 datatypical.JIT_CACHE_ENABLED      # True when compiled kernels are cached on disk
 datatypical.PCHA is not None       # True when archetypal_method='aa' can run
@@ -297,12 +304,18 @@ Default TfidfVectorizer settings are used (can be customized in future versions)
 Custom sparse-aware scaling preserves memory efficiency:
 
 ```python
-def _sparse_minmax_0_1_nonneg(M: sp.spmatrix) -> sp.spmatrix:
+def _sparse_minmax_0_1_nonneg(M, col_max=None):
     A = M.tocsc(copy=False)
-    col_max = A.max(axis=0).toarray().ravel()
-    col_max[col_max == 0.0] = 1.0
+    if col_max is None:
+        col_max = _sparse_column_max(A)    # each column's maximum, 1.0 if empty
     return (A @ sp.diags(1.0 / col_max)).tocsr()
 ```
+
+The fit divides each term by its maximum over the training corpus, and since
+v0.8.3 `transform()` divides new documents by the same training maxima (a
+weight above one is clipped to it, with a warning), as tabular `transform()`
+scales by the training range. Through v0.8.2 each transformed corpus was
+divided by its own maxima, so a single new document's terms all became 1.0.
 
 **Step 3: Sparse L2 Normalization**
 
@@ -654,21 +667,52 @@ machine precision.
 | Archetypal formative | samples | mean of per-archetype minimum games | O(n log n) per archetype | 0.8.0 |
 | Prototypical formative | samples | mean of maxima, decomposed into indicator games | O(n^2 log n) | 0.8.0 |
 | Stereotypical formative | samples | constant minus a mean game | O(n) | 0.8.0 |
-| Archetypal explanation | features | mean game | O(d) per sample | 0.8.2 |
-| Prototypical explanation | features | variance game | O(d) per sample | 0.8.2 |
+| Archetypal explanation (`'fitted'`) | features | additive projection share plus a two-player corner game | O(dk) per sample | 0.8.3 |
+| Prototypical explanation (`'fitted'`) | features | additive: squared distance and cosine to prototypes | O(dp) per sample | 0.8.3 |
 | Stereotypical explanation | features | scaled mean game | O(d) per sample | 0.8.2 |
+| Archetypal explanation (`'legacy'`) | features | mean game | O(d) per sample | 0.8.2 |
+| Prototypical explanation (`'legacy'`) | features | variance game | O(d) per sample | 0.8.2 |
 
-The mean game `v(S) = (1/|S|) sum over S of c_i` has
+Here k is the number of archetypes and p the number of prototypes.
+
+**The fitted explanation games (default since 0.8.3).** Each is the
+significance score with the fitted model held fixed, played over the features.
+
+`archetypal_rank = 0.7 * wmax + 0.3 * corner`. The archetype weights are the
+least-squares projection `w = x B`, `B = H^T (H H^T + 1e-6 I)^+`, clipped at
+zero, and `wmax = w_k / S` for the dominant archetype k and the total positive
+weight S. B is linear, so `wmax = sum over f of x_f B[f, k] / S` is a sum of one
+term per feature, and an additive game's Shapley values are its terms. (For
+NMF the weights come from a non-negative solve; on its active set that is the
+same projection, and the terms are rescaled to the solver's weight.) The corner
+term `1 - ||m_T|| / sqrt(2)`, `m = min(x, 1 - x)` over the two corner features
+T, is a game on two players, `phi_a = (u({a}) + u({a, b}) - u({b})) / 2`. The
+values sum to `archetypal_rank` exactly.
+
+`prototypical_rank = 0.5 * (1 - min(dist / d95, 1)) + 0.5 * cos`, with dist the
+Euclidean distance to the nearest prototype p, d95 its 95th percentile over the
+training set, and cos the cosine similarity to the most similar prototype q.
+The game keeps both halves and squares the distance, which makes it additive
+apart from a constant the Shapley value splits evenly:
+
+    phi_f = 0.5 * (1/d - (x_f - p_f)^2 / d95^2) + 0.5 * xhat_f * qhat_f
+
+The values sum to `0.5 * (1 - dist^2 / d95^2) + 0.5 * cos`, which differs from
+the rank only in how the distance enters. On the paper's datasets the two
+correlate at Spearman 0.99 to 1.00.
+
+**The 0.8.2 games (`explanation_game='legacy'`).** The mean game
+`v(S) = (1/|S|) sum over S of c_i` has
 
     phi_i = (1/n) * [ c_i + (c_i - mbar_i) * (H_n - 1) ]
 
 with `mbar_i` the mean of `c` over the other players and `H_n` the nth harmonic
-number. The archetypal explanation is that game on
-`c_f = 1 - 2 min(x_f, 1 - x_f)`, and the stereotypical one is that game on
-`|x_f|`, scaled by the sample's stereotypical weight.
+number. The legacy archetypal explanation is that game on
+`c_f = 1 - 2 min(x_f, 1 - x_f)`, and the stereotypical one (the same under both
+settings) is that game on `|x_f|`, scaled by the sample's stereotypical weight.
 
-The prototypical explanation plays the population variance of the sample's
-values over the coalition. Writing it as
+The legacy prototypical explanation plays the population variance of the
+sample's values over the coalition. Writing it as
 
     v(F) = (1/|F|) sum_F x_f^2 - (1/|F|^2) sum_F x_f^2 - (2/|F|^2) sum over pairs in F of x_f x_g
 
@@ -680,8 +724,9 @@ the variance.
 
 The functions are public: `exact_formative_archetypal`,
 `exact_formative_prototypical`, `exact_formative_stereotypical`,
-`exact_explanations_archetypal`, `exact_explanations_prototypical` and
-`exact_explanations_stereotypical`.
+`exact_explanations_archetypal_fitted`, `exact_explanations_prototypical_fitted`,
+`exact_explanations_stereotypical`, and the legacy
+`exact_explanations_archetypal` and `exact_explanations_prototypical`.
 
 **Why exact is the default.** On a 100-document corpus with 1,277 terms the
 sampled explanations took about 25 minutes per significance type at 100
@@ -692,8 +737,10 @@ archetypal rankings correlating 0.02.
 ### Permutation Sampling (opt-in)
 
 `formative_method='monte_carlo'` and `explanation_method='monte_carlo'`
-reproduce results from before v0.8.0 and v0.8.2 respectively. They estimate the
-same games by permutation sampling:
+reproduce results from before v0.8.0 and v0.8.2 respectively (the latter with
+`explanation_game='legacy'`). They estimate the same games by permutation
+sampling. The fitted prototypical explanation game is additive, so every
+permutation returns its exact value:
 
 ```python
 for perm in permutations:
@@ -1062,7 +1109,7 @@ Used in:
 | `shapley_top_n` | 0.5 (50%) | None (all) |
 | `shapley_compute_formative` | False | True |
 
-Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, best of two fits:
+Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, best of two fits. They were measured with v0.8.2 and stand for v0.8.3, which adds a few milliseconds of explanation work and no longer computes an unused pass over all pairs of samples.
 
 | Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
 | --- | --- | --- | --- | --- |
@@ -1253,6 +1300,7 @@ where V is the cost of one incremental value-function update.
 | `shapley_compute_formative` | bool | None | Compute formative instances |
 | `formative_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` sampling (v0.8.0) |
 | `explanation_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` sampling (v0.8.2) |
+| `explanation_game` | str | `'fitted'` | `'fitted'` games on the scores and fitted model, or `'legacy'` 0.8.2 games (v0.8.3) |
 
 ### Significance Selection (v0.7.6)
 
@@ -1519,5 +1567,5 @@ Convergence: O(1/√M) by CLT.
 
 ---
 
-*DataTypical v0.7 - Computation Guide*
+*DataTypical v0.8.3 - Computation Guide*
 *A comprehensive reference for advanced users*

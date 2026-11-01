@@ -1,5 +1,10 @@
 # Structural-significance benchmarks (DataTypical v0.8.2)
 
+> **The figures stand for v0.8.3.** They were last run with v0.8.2. Version
+> 0.8.3 changes only the archetypal and prototypical feature-level
+> explanations, which these benchmarks do not read, and leaves every rank and
+> formative value as it was, so a re-run would reproduce them.
+
 Focused, corrected re-do of the Appendix A/C structural experiments. These
 scripts answer one question cleanly:
 

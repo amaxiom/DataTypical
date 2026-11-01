@@ -1,6 +1,6 @@
 # DataTypical Package Summary
 
-**Version 0.8.2** | Comprehensive technical reference
+**Version 0.8.3** | Comprehensive technical reference
 
 ---
 
@@ -13,6 +13,13 @@ DataTypical is a Python library for explainable instance significance discovery 
 **Supported Data Types**: Tabular, text, and graph networks through unified API with automatic detection.
 
 ---
+
+## What's New in v0.8.3
+
+- **The archetypal and prototypical explanations decompose their ranks.** Their games are the significance scores with the fitted archetypes and prototypes held fixed (`explanation_game='fitted'`, the default): the archetypal attributions sum to `archetypal_rank`, the prototypical ones to the prototypical score with its distance squared. The 0.8.2 games did not follow the ranks, and the prototypical one ran against `prototypical_rank`; `explanation_game='legacy'` keeps them. New public functions `exact_explanations_archetypal_fitted` and `exact_explanations_prototypical_fitted`.
+- **`transform()` on new rows gives NaN formative ranks.** It used to give each new row the formative ranks of the training row sharing its index label. Formative ranks belong to the training samples, matched by label and feature values (for text, by position and document).
+- **Text transforms treat new documents as the fit did**: scaled by the training corpus's term maxima, with `text_metadata=` for a `stereotype_column`.
+- Fixes from a pre-release audit, none of which changes a `fit_transform()` result: `get_formative_attributions()` with one significance type selected, the `converged` flag of sampled runs, an unused all-pairs pass removed from every fit, rows of zeros in `heatmap()`, and the matplotlib minimum (3.6). See the CHANGELOG.
 
 ## What's New in v0.8.2
 
@@ -64,7 +71,7 @@ pip install datatypical
 - Pandas ≥ 1.3
 - SciPy ≥ 1.7
 - scikit-learn ≥ 1.0
-- Matplotlib ≥ 3.3
+- Matplotlib ≥ 3.6
 - Seaborn ≥ 0.11
 - Numba ≥ 0.55 (compiled kernels; a NumPy fallback runs without it, with a warning)
 - NetworkX ≥ 2.6
@@ -94,6 +101,7 @@ dt = DataTypical(                  # the defaults
     archetypal_method=None,        # None follows fast_mode: 'aa' or 'nmf'
     formative_method='exact',      # or 'monte_carlo'
     explanation_method='exact',    # or 'monte_carlo'
+    explanation_game='fitted',     # or 'legacy' for the 0.8.2 explanation games
     shapley_n_permutations=100,    # used only by 'monte_carlo'
     shapley_top_n=None,
     random_state=42,
@@ -126,9 +134,15 @@ Transform new data using the fitted model.
 
 **Parameters**:
 - `X`: Data to transform (same format and features as the fit)
-- The same keywords as `fit()`, for example `edges` for graph data
+- The same keywords as `fit()`, for example `edges` for graph data, or
+  `text_metadata` for documents a text fit with a `stereotype_column` was not
+  fitted on
 
-**Returns**: `pd.DataFrame` with rank columns
+**Returns**: `pd.DataFrame` with rank columns. With `shapley_mode=True` the
+formative ranks (`*_shapley_rank`) belong to the training samples, so a row
+that is not one of them (by index label and feature values; for text, by
+position and document) gets NaN, with a warning. New documents are scaled by
+the training corpus's term maxima, as new rows are by the training range.
 
 #### `fit_transform(X, return_ranks_only=None, **kwargs)`
 Fit the model and transform the same data in one step.
@@ -157,12 +171,14 @@ Get sample-level formative attributions.
 **Parameters**:
 - `sample_idx`: Index of sample
 
-**Returns**: `Dict[str, float]` with keys:
+**Returns**: `Dict[str, np.ndarray]`, one entry for each significance type whose formative values were computed (since v0.8.3 also when `selected_significance` leaves out archetypal):
 - `'archetypal'`: Sample's contribution to archetypal structure
 - `'prototypical'`: Sample's contribution to prototypical structure
 - `'stereotypical'`: Sample's contribution to stereotypical structure
 
-**Requires**: `shapley_mode=True`, `fast_mode=False`
+Each array has one entry per feature: the sample's formative value spread evenly over the features, so `.sum()` is the value itself.
+
+**Requires**: `shapley_mode=True`, `fast_mode=False`; raises `RuntimeError` when no formative values were computed
 
 ---
 
@@ -190,6 +206,7 @@ Get sample-level formative attributions.
 |-----------|------|---------|-------------|
 | `formative_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` permutation sampling |
 | `explanation_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` permutation sampling |
+| `explanation_game` | str | `'fitted'` | `'fitted'` games on the scores and fitted model, or `'legacy'` 0.8.2 games |
 | `shapley_n_permutations` | int | `100` | Permutations for `'monte_carlo'` (30 in fast_mode) |
 | `shapley_top_n` | int/float | `None` | Limit explanations to top N samples (int) or fraction (float) |
 
@@ -305,7 +322,7 @@ heatmap(
 
 **Boxes**: Heatmap and colorbar have black borders for publication quality.
 
-**Warning**: When `order='formative'`, may show zero Shapley values if formative samples aren't in top-N for explanations.
+**Warning**: When `order='formative'`, a formative sample outside the `shapley_top_n` subsample has no explanations; it is left out, and a warning counts it. A row of zeros is a computed result (since v0.8.3 it is shown, not dropped), reported in a separate note.
 
 ### profile_plot()
 
@@ -414,7 +431,7 @@ results = dt.fit_transform(node_features, edges=edges)
 
 ### Speed
 
-Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, best of two fits after a warm-up:
+Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, best of two fits after a warm-up. They were measured with v0.8.2 and stand for v0.8.3, which adds a few milliseconds of explanation work and no longer computes an unused pass over all pairs of samples.
 
 | Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
 | --- | --- | --- | --- | --- |
@@ -675,13 +692,13 @@ dt = DataTypical(random_state=42)
 - Use `fast_mode=False` for all samples
 - Select samples within the top-N for the significance type
 
-### Zero Shapley values in formative ordering
+### Formative samples left out of a heatmap
 
-**Cause**: Sample is formative but not in top-N for actual significance.
+**Cause**: The sample is formative but outside the `shapley_top_n` subsample, so its explanations were not computed.
 
-**Meaning**: Expected behavior - sample creates structure but isn't individually extreme.
+**Meaning**: Expected behavior: the sample creates structure but isn't individually extreme.
 
-**Action**: This is informative, not an error.
+**Action**: This is informative, not an error. Raise `shapley_top_n` to explain it. A row of zeros is different: its explanations were computed and every feature's is zero (for example, a sample exactly at a numeric `stereotype_target`).
 
 ### "Feature dimension mismatch"
 
@@ -713,10 +730,14 @@ dt = DataTypical(random_state=42)
 
 ## Version History
 
-### v0.8.2 (Current)
+### v0.8.3 (Current)
 
-See [What's New in v0.8.2](#whats-new-in-v082) above, and the CHANGELOG for
+See [What's New in v0.8.3](#whats-new-in-v083) above, and the CHANGELOG for
 every release.
+
+### v0.8.2
+
+See [What's New in v0.8.2](#whats-new-in-v082) above.
 
 ### v0.7
 
@@ -739,7 +760,7 @@ every release.
   title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
   year = {2026},
   url = {https://github.com/amaxiom/DataTypical},
-  version = {0.8.2}
+  version = {0.8.3}
 }
 ```
 

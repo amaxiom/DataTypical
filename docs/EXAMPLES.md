@@ -427,8 +427,12 @@ unprecedented = results_new[
 
 print(f"\n{len(unprecedented)} unprecedented samples detected")
 
-# Get formative ranks to understand if they're creating NEW structure
-# Note: formative ranks from transform show how they'd fit into historical structure
+# Explanations and formative ranks belong to the samples a model was fitted
+# on, so transform() gives the new batch its ranks and NaN formative ranks.
+# To explain the new samples, fit once more on the history and the batch
+# together (the two keep their own index labels, so they cannot collide).
+dt_all = DataTypical(shapley_mode=True, fast_mode=False)
+results_all = dt_all.fit_transform(pd.concat([X_historical, X_new]))
 unprecedented_idx = unprecedented.index
 
 for idx in unprecedented_idx[:5]:  # Examine first 5
@@ -436,8 +440,8 @@ for idx in unprecedented_idx[:5]:  # Examine first 5
     print(f"  Archetypal: {results_new.loc[idx, 'archetypal_rank']:.3f}")
     print(f"  Prototypical: {results_new.loc[idx, 'prototypical_rank']:.3f}")
     
-    # Get explanations
-    explanations = dt.get_shapley_explanations(idx)
+    # Get explanations, from the fit that includes the sample
+    explanations = dt_all.get_shapley_explanations(idx)
     arch_exp = explanations['archetypal']
     
     # Top contributing sensors
@@ -473,11 +477,12 @@ fig, axes = plt.subplots(1, 2, figsize=(20, 5))
 # Compare to most extreme historical
 historical_extreme = results_historical['archetypal_rank'].idxmax()
 
-profile_plot(dt, historical_extreme, significance='archetypal', 
+# Both from the combined fit of Step 3, so the two profiles share one model
+profile_plot(dt_all, historical_extreme, significance='archetypal', 
              order='global', ax=axes[0])
 axes[0].set_title('Most Extreme Historical Sample', fontsize=14)
 
-profile_plot(dt, most_extreme, significance='archetypal', 
+profile_plot(dt_all, most_extreme, significance='archetypal', 
              order='global', ax=axes[1])
 axes[1].set_title('Most Extreme New Sample', fontsize=14)
 

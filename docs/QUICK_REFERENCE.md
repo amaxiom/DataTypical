@@ -1,6 +1,6 @@
 # DataTypical Quick Reference
 
-**Version 0.8.2** | Daily reference for exploring instance significance
+**Version 0.8.3** | Daily reference for exploring instance significance
 
 ---
 
@@ -89,7 +89,7 @@ dt = DataTypical(fast_mode=False)
 dt = DataTypical(shapley_mode=True)
 ```
 
-**Measured** (an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features):
+**Measured** (an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, with v0.8.2; they stand for v0.8.3):
 
 | Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
 | --- | --- | --- | --- | --- |
@@ -119,6 +119,7 @@ count needs tuning.
 | `shapley_top_n` | `None` | Limit explanations to top N samples (or a fraction) |
 | `formative_method` | `'exact'` | `'monte_carlo'` reproduces pre-0.8.0 sampling |
 | `explanation_method` | `'exact'` | `'monte_carlo'` reproduces pre-0.8.2 sampling |
+| `explanation_game` | `'fitted'` | `'legacy'` plays the 0.8.2 explanation games |
 
 ### For Stereotypical Analysis
 ```python
@@ -263,9 +264,9 @@ from sklearn.cluster import KMeans
 **Problem**: Requesting samples without computed explanations  
 **Solution**: Increase `shapley_top_n` or use `fast_mode=False`
 
-### Zero Shapley values in heatmap
-**Problem**: Formative sample not in top-N for actual significance  
-**Solution**: This is expected! Shows distinction between formative and actual
+### Formative samples left out of a heatmap
+**Problem**: Formative sample outside the `shapley_top_n` subsample, so not explained  
+**Solution**: This is expected! The heatmap leaves it out and says so; raise `shapley_top_n` to include it. A row of zeros is a computed result, not a missing one
 
 ### Very slow with Shapley
 **Problem**: The prototypical formative values are O(n^2), or `'monte_carlo'` sampling was asked for
@@ -350,7 +351,9 @@ explanations['stereotypical']  # Feature contributions to stereotypical
 ```python
 attributions = dt.get_formative_attributions(sample_idx)
 
-# Returns dict with three keys (sample-level, not feature-level)
+# One key per significance type whose formative values were computed; each
+# value is the sample's formative value spread evenly over the features, so
+# .sum() gives the sample-level number
 attributions['archetypal']     # How sample creates archetypal structure
 attributions['prototypical']   # How sample creates prototypical structure
 attributions['stereotypical']  # How sample creates stereotypical structure

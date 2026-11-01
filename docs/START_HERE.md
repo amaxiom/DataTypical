@@ -220,7 +220,7 @@ profile_plot(dt, top_idx, significance='archetypal')
 
 ## Performance Expectations
 
-Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, in seconds:
+Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, in seconds. They were measured with v0.8.2 and stand for v0.8.3, which adds a few milliseconds of explanation work and no longer computes an unused pass over all pairs of samples.
 
 | Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
 | --- | --- | --- | --- | --- |

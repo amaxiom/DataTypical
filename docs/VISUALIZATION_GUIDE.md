@@ -1,6 +1,6 @@
 # DataTypical Visualization Guide
 
-**Version 0.8.2**
+**Version 0.8.3**
 
 ## Overview
 
@@ -132,9 +132,9 @@ ax = heatmap(
 - Top row = most structure-defining sample
 - Shows feature patterns in samples that drive the analysis
 - Use when: Understanding which samples shape your dataset
-- **Note**: May show zero Shapley values if formative samples aren't in top-N explanations
+- **Note**: Formative samples outside the `shapley_top_n` subsample have no explanations and are left out, with a warning
   - These samples CREATE structure globally but aren't themselves highly significant
-  - Determined by `shapley_top_n` parameter
+  - A row of zeros, by contrast, was explained: every feature's attribution is zero (shown since v0.8.3, not dropped)
 
 **Feature Ordering**:
 - Features are ALWAYS ordered by global importance (left to right)
@@ -172,13 +172,20 @@ ax = heatmap(
 
 When using `order='formative'`, you may see:
 ```
-Warning: X/Y top formative archetypal instances have zero Shapley values
+Warning: X/Y top formative archetypal instances have no explanations and are left out
   This occurs when a formative instance is not in the top archetypal instances
   (determined by shapley_top_n parameter)
   These instances CREATE structure but are not themselves highly archetypal
 ```
 
-**What this means**: The sample is formative (important for structure) but wasn't in the top-N for actual significance, so detailed feature explanations weren't computed. This is expected behavior when using `shapley_top_n` optimization.
+**What this means**: The sample is formative (important for structure) but wasn't in the top-N for actual significance, so detailed feature explanations weren't computed and it is not drawn. This is expected behavior when using `shapley_top_n` optimization.
+
+Since v0.8.3 a row whose explanations were computed and are all zero is drawn, and reported separately:
+```
+Note: X/Y top formative stereotypical instances have zero Shapley values
+  Their explanations were computed and are zero for every feature
+```
+Through v0.8.2 such rows were dropped whenever `shapley_top_n` was set, and the plot blamed `shapley_top_n`.
 
 ---
 
@@ -568,13 +575,13 @@ for i, idx in enumerate(unique_mechanisms.index):
 - Or use `fast_mode=False` to compute explanations for all samples
 - Or select samples that are in the top-N for the significance type you're visualizing
 
-### Zero Shapley values in formative ordering
+### Formative samples left out in formative ordering
 
 **Cause**: Sample is formative (creates structure) but not in top-N for actual significance, so detailed explanations weren't computed.
 
-**What it means**: This is expected! The sample is important globally but not individually extreme.
+**What it means**: This is expected! The sample is important globally but not individually extreme. The heatmap leaves it out and the warning counts it.
 
-**Solution**: Not an error: it reveals the distinction between formative and actual significance. Increase `shapley_top_n` to raise the chance all formative instances have explanations.
+**Solution**: Not an error: it reveals the distinction between formative and actual significance. Increase `shapley_top_n` to raise the chance all formative instances have explanations. A row of zeros is not this case: its explanations were computed, and its game gives every feature zero (for example, a sample exactly at a numeric `stereotype_target`).
 
 ### "No explanations available for '{significance}'"
 

@@ -1,4 +1,4 @@
-# DataTypical v0.8.2 - Interpretation Guide
+# DataTypical v0.8.3 - Interpretation Guide
 
 ## Table of Contents
 
@@ -385,20 +385,24 @@ evaluations. DataTypical never does that. Every game it plays has a closed form,
 used by default since v0.8.0 for the formative values (`formative_method='exact'`)
 and since v0.8.2 for the explanations (`explanation_method='exact'`).
 
-The explanation games are played over the features of one sample, and each is
-a mean game or a variance game over those features. For a mean game
-v(F) = mean over F of c_f, over d players,
+The explanation games are played over the features of one sample. Since v0.8.3
+the archetypal and prototypical ones are the significance scores themselves,
+with the fitted archetypes and prototypes held fixed
+(`explanation_game='fitted'`), and both are additive apart from a two-player
+corner term in the archetypal score, so their Shapley values are read off
+directly. The stereotypical game is a mean game: for v(F) = mean over F of c_f,
+over d players,
 
 ```
 phi_f = (1/d) * [ c_f + (c_f - mbar_f) * (H_d - 1) ]
 ```
 
 with `mbar_f` the mean of c over the other features and `H_d` the dth harmonic
-number. The variance game splits into single and pair indicator games, each of
-which has a closed form too. The results are exact, satisfy efficiency to
-machine precision, cost O(d) per sample, and do not depend on `random_state`.
-Each one is verified in the test suite against exhaustive enumeration of every
-coalition.
+number. (The 0.8.2 archetypal game, `explanation_game='legacy'`, is a mean game
+too, and the 0.8.2 prototypical game a variance game, which splits into single
+and pair indicator games.) The results are exact, satisfy efficiency to machine
+precision, cost O(d) per sample, and need no permutations. Each one is verified
+in the test suite against exhaustive enumeration of every coalition.
 
 ### Permutation-Based Approximation
 
@@ -421,32 +425,46 @@ phi[f] = marginal[f] / n_permutations
 
 ### Value Functions for Explanations
 
-**Archetypal Explanations**:
+**Archetypal Explanations** (`explanation_game='fitted'`, the default):
 
-Measures how much each feature contributes to the sample's extremeness:
-
-```python
-def explain_archetypal_features(X_subset, indices, context):
-    # Distance to boundary (0 or 1) for each feature
-    dist_to_boundary = np.minimum(X_subset, 1.0 - X_subset)
-    # Closer to boundary = more archetypal
-    archetypal_contribution = np.mean(1.0 - 2.0 * dist_to_boundary, axis=1)
-    return np.mean(archetypal_contribution)
-```
-
-**Interpretation**: Features with values near 0 or 1 (extremes) contribute positively. Features with values near 0.5 (central) contribute negatively.
-
-**Prototypical Explanations**:
-
-Measures how much each feature contributes to representativeness:
+Decomposes `archetypal_rank` itself. The rank is 0.7 times the sample's
+largest share of archetype membership plus 0.3 times a corner term:
 
 ```python
-def explain_prototypical_features(X_subset, indices, context):
-    # Higher variance = more representative of data spread
-    return np.mean(np.var(X_subset, axis=1))
+# w = x B, B = H^T (H H^T + 1e-6 I)^+, clipped at zero; k the dominant archetype
+phi_f = 0.7 * x_f * B[f, k] / sum(w)          # the membership share, per feature
+phi[corner features] += 0.3 * (two-player Shapley values of the corner term)
+# sum(phi) == archetypal_rank
 ```
 
-**Interpretation**: Features where the sample has values consistent with the population variance contribute positively.
+**Interpretation**: A positive value is a feature that places the sample with
+its dominant archetype; a negative value is one that pulls it towards the
+others. The two corner features also carry the corner term, which is why they
+often stand out: 30 per cent of the score rests on them.
+
+**Prototypical Explanations** (`explanation_game='fitted'`, the default):
+
+Decomposes the prototypical score, with its distance squared. The rank is half
+closeness to the nearest prototype p and half cosine similarity to the most
+similar prototype q:
+
+```python
+phi_f = 0.5 * (1/d - (x_f - p_f)**2 / d95**2) + 0.5 * xhat_f * qhat_f
+# sum(phi) == 0.5 * (1 - dist**2 / d95**2) + 0.5 * cos
+```
+
+**Interpretation**: A feature on which the sample departs from its nearest
+prototype is pulled down by its squared departure; a feature that carries its
+cosine similarity to the most similar prototype is pushed up. A prototype,
+which matches itself everywhere, is explained by the features that carry its
+similarity.
+
+**The 0.8.2 games** (`explanation_game='legacy'`): the archetypal game was the
+mean over the coalition of `1 - 2 min(x_f, 1 - x_f)`, the closeness of each
+value to a bound of its feature, and the prototypical game the variance of the
+sample's values over the coalition. Neither reads the fitted model, and their
+values do not follow the ranks: the variance game correlated with
+`prototypical_rank` at -0.18 to -0.81 on the DataTypical paper's datasets.
 
 **Stereotypical Explanations**:
 
@@ -471,15 +489,19 @@ explanation.
 
 **Positive Shapley Value**:
 - Feature INCREASES the sample's significance
-- For archetypal: Feature is extreme (near 0 or 1)
-- For prototypical: Feature makes sample representative
+- For archetypal: Feature places the sample with its dominant archetype, or near a corner on a corner feature
+- For prototypical: Feature carries the sample's similarity to a prototype
 - For stereotypical: Feature pushes toward target
 
 **Negative Shapley Value**:
 - Feature DECREASES the sample's significance
-- For archetypal: Feature is central (near 0.5)
-- For prototypical: Feature makes sample atypical
+- For archetypal: Feature pulls the sample towards the other archetypes
+- For prototypical: The sample departs from its nearest prototype on this feature
 - For stereotypical: Feature pulls away from target
+
+With the default fitted games the archetypal values sum to `archetypal_rank`
+and the prototypical ones to the prototypical score with its distance squared,
+so the bars of a profile plot are a decomposition of the rank.
 
 **Zero/Small Shapley Value**:
 - Feature has minimal impact on this sample's significance
@@ -817,7 +839,8 @@ for i in top_idx:
 # Get formative attributions (requires fast_mode=False)
 try:
     attributions = dt.get_formative_attributions(sample_idx)
-    # Returns dict with keys: 'archetypal', 'prototypical', 'stereotypical'
+    # Returns a dict keyed by the significance types whose formative values
+    # were computed ('archetypal', 'prototypical', 'stereotypical')
 except RuntimeError as e:
     print("Formative data not available (fast_mode=True)")
 ```
@@ -1308,7 +1331,7 @@ curated = pd.concat([critical_reps, boundary_definers, gap_fillers]).drop_duplic
 dt = DataTypical(shapley_mode=True, fast_mode=False)
 results = dt.fit_transform(historical_batches)
 
-# Transform new batch
+# Score the new batch against the historical model
 new_results = dt.transform(new_batch)
 
 # Check archetypal rank (unprecedented = very high)
@@ -1316,16 +1339,21 @@ arch_rank = new_results['archetypal_rank'].values[0]
 
 if arch_rank > 0.95:
     print("UNPRECEDENTED: Novel variation detected")
-    profile_plot(dt, new_results.index[0], significance='archetypal')
 elif arch_rank > 0.8:
-    # Check if it matches known extremes
-    form_rank = new_results['archetypal_shapley_rank'].values[0]
-    if form_rank > 0.7:
-        print("NOVEL EXTREME: Unique boundary case")
-    else:
-        print("KNOWN EXTREME: Similar to existing extremes")
+    print("EXTREME: Near the historical boundary")
 else:
     print("NORMAL: Within expected variation")
+
+# Formative ranks and explanations belong to the samples a model was fitted
+# on, so transform() reports NaN formative ranks for the new batch. To see
+# whether the batch reshapes the boundary, and why it is extreme, fit on the
+# history and the batch together (with distinct index labels):
+dt_all = DataTypical(shapley_mode=True, fast_mode=False)
+results_all = dt_all.fit_transform(pd.concat([historical_batches, new_batch]))
+new_id = new_batch.index[0]
+if results_all.loc[new_id, 'archetypal_shapley_rank'] > 0.7:
+    print("NOVEL EXTREME: The batch reshapes the boundary")
+profile_plot(dt_all, new_id, significance='archetypal')
 ```
 
 ---
@@ -1376,5 +1404,5 @@ else:
 
 ---
 
-*DataTypical v0.8.2 - Interpretation Guide*
+*DataTypical v0.8.3 - Interpretation Guide*
 *For understanding and applying instance significance analysis*
