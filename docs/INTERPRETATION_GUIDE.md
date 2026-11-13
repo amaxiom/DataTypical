@@ -1,4 +1,4 @@
-# DataTypical v0.8.3 - Interpretation Guide
+# DataTypical v0.8.4 - Interpretation Guide
 
 ## Table of Contents
 
@@ -441,6 +441,17 @@ phi[corner features] += 0.3 * (two-player Shapley values of the corner term)
 its dominant archetype; a negative value is one that pulls it towards the
 others. The two corner features also carry the corner term, which is why they
 often stand out: 30 per cent of the score rests on them.
+
+**Two things to check (v0.8.4).** First, which features the corner
+term reads: `corner_features_` names them, and a warning says so when the
+default rule picks a coarsely recorded one, which logged counts with zeros
+often are. `corner_features='archetypes'` reads the features on which the
+archetypes differ most instead. Second, where each feature is measured from:
+by default from the bottom of its scaled range, so a feature with a negative
+coefficient on the dominant archetype contributes zero or less even when its
+value is well below average. `archetypal_explanation_baseline='mean'`
+measures from the training mean; the values then sum to `archetypal_rank`
+minus `archetypal_explanation_base_`, and the ranks do not change.
 
 **Prototypical Explanations** (`explanation_game='fitted'`, the default):
 
@@ -1331,7 +1342,9 @@ curated = pd.concat([critical_reps, boundary_definers, gap_fillers]).drop_duplic
 dt = DataTypical(shapley_mode=True, fast_mode=False)
 results = dt.fit_transform(historical_batches)
 
-# Score the new batch against the historical model
+# Score the new batch against the historical model. Since v0.8.4 each row is
+# scored on the historical data's scales, so a batch of one is scored as it
+# would be among a thousand; through 0.8.3 the scales came from the batch.
 new_results = dt.transform(new_batch)
 
 # Check archetypal rank (unprecedented = very high)
@@ -1404,5 +1417,5 @@ profile_plot(dt_all, new_id, significance='archetypal')
 
 ---
 
-*DataTypical v0.8.3 - Interpretation Guide*
+*DataTypical v0.8.4 - Interpretation Guide*
 *For understanding and applying instance significance analysis*

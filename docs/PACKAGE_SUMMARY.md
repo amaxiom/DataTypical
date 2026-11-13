@@ -1,6 +1,6 @@
 # DataTypical Package Summary
 
-**Version 0.8.3** | Comprehensive technical reference
+**Version 0.8.4** | Comprehensive technical reference
 
 ---
 
@@ -13,6 +13,13 @@ DataTypical is a Python library for explainable instance significance discovery 
 **Supported Data Types**: Tabular, text, and graph networks through unified API with automatic detection.
 
 ---
+
+## What's New in v0.8.4
+
+- **`transform()` scores each row on the training set's scales.** Through 0.8.3 it took the corner features of the archetypal score, the prototype distance scale d95 and the stereotypical rank's target and largest distance from the rows it was given, so a row's ranks depended on the other rows in the call; a row transformed on its own ranked 0.0 on stereotypicality (1.0 for `'max'` or `'min'`). The fit now records the three. `fit_transform()` is unchanged to the bit. A fit saved before 0.8.4 is scored the old way, with a warning.
+- **New rows without a held-out stereotype column are scored**, with a NaN `stereotypical_rank`; they used to be refused.
+- **`corner_features`** (`None`, the 0.8.3 rule; `'archetypes'`; or one or two names) and **`archetypal_explanation_baseline`** (`'minimum'`, the 0.8.3 game, or `'mean'`, from the training mean, with the base in `archetypal_explanation_base_`). Both default to 0.8.3's behaviour. `exact_explanations_archetypal_fitted` gains `baseline=` and `return_base=`.
+- **A warning** when the default corner rule picks a feature with very few distinct values, such as a logged count with zeros; it changes no number.
 
 ## What's New in v0.8.3
 
@@ -207,6 +214,8 @@ Each array has one entry per feature: the sample's formative value spread evenly
 | `formative_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` permutation sampling |
 | `explanation_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` permutation sampling |
 | `explanation_game` | str | `'fitted'` | `'fitted'` games on the scores and fitted model, or `'legacy'` 0.8.2 games |
+| `corner_features` | str/list | `None` | Corner-term features: `None` the 0.8.3 rule (chosen on the training rows), `'archetypes'`, or one or two names (v0.8.4) |
+| `archetypal_explanation_baseline` | str | `'minimum'` | `'mean'` measures archetypal explanations from the training mean (v0.8.4) |
 | `shapley_n_permutations` | int | `100` | Permutations for `'monte_carlo'` (30 in fast_mode) |
 | `shapley_top_n` | int/float | `None` | Limit explanations to top N samples (int) or fraction (float) |
 
@@ -431,7 +440,7 @@ results = dt.fit_transform(node_features, edges=edges)
 
 ### Speed
 
-Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, best of two fits after a warm-up. They were measured with v0.8.2 and stand for v0.8.3, which adds a few milliseconds of explanation work and no longer computes an unused pass over all pairs of samples.
+Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, best of two fits after a warm-up. They were measured with v0.8.2 and stand for v0.8.3 and v0.8.4: 0.8.3 adds a few milliseconds of explanation work and no longer computes an unused pass over all pairs of samples, and 0.8.4 adds one pass over the training rows at the end of a fit.
 
 | Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
 | --- | --- | --- | --- | --- |
@@ -533,7 +542,9 @@ heatmap(dt_detailed, results_detailed, significance='archetypal')
 dt = DataTypical(shapley_mode=True)
 results_train = dt.fit_transform(train_data)
 
-# Transform test set
+# Transform test set. Since v0.8.4 each row is scored on the training set's
+# scales, whatever else is in the call; formative ranks are NaN for rows that
+# are not training samples.
 results_test = dt.transform(test_data)
 
 # Compare distributions
@@ -730,10 +741,14 @@ dt = DataTypical(random_state=42)
 
 ## Version History
 
-### v0.8.3 (Current)
+### v0.8.4 (Current)
 
-See [What's New in v0.8.3](#whats-new-in-v083) above, and the CHANGELOG for
+See [What's New in v0.8.4](#whats-new-in-v084) above, and the CHANGELOG for
 every release.
+
+### v0.8.3
+
+See [What's New in v0.8.3](#whats-new-in-v083) above.
 
 ### v0.8.2
 
@@ -760,7 +775,7 @@ See [What's New in v0.8.2](#whats-new-in-v082) above.
   title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
   year = {2026},
   url = {https://github.com/amaxiom/DataTypical},
-  version = {0.8.3}
+  version = {0.8.4}
 }
 ```
 

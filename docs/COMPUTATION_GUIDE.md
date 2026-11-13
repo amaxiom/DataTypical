@@ -1,4 +1,4 @@
-# DataTypical v0.8.3 - Computation Guide
+# DataTypical v0.8.4 - Computation Guide
 
 ## Table of Contents
 
@@ -44,6 +44,14 @@ fixed (`explanation_game='fitted'`, the default), so the archetypal attributions
 sum to `archetypal_rank` and the prototypical ones to the prototypical score
 with its distance squared. The 0.8.2 games, kept as `explanation_game='legacy'`,
 did not follow the ranks. See [Exact Computation](#exact-computation-the-default).
+
+Version 0.8.4 makes `transform()` score every row on the training set's
+scales: the corner features of the archetypal score, the prototype distance
+scale d95 and the stereotypical rank's normaliser are recorded at the end of
+the fit. Through 0.8.3 they were taken from the rows `transform()` was given,
+so a row's ranks depended on the others in the call. `fit_transform()` is
+unchanged to the bit. Two opt-in options, `corner_features` and
+`archetypal_explanation_baseline`, default to the 0.8.3 behaviour.
 
 Version 0.8.2 computes the feature-level **explanations** exactly by default
 (`explanation_method='exact'`): all three explanation games have closed forms,
@@ -115,7 +123,7 @@ still imports when they are missing, with defined consequences:
 ```python
 import datatypical
 
-datatypical.__version__            # '0.8.3'
+datatypical.__version__            # '0.8.4'
 datatypical.NUMBA_AVAILABLE        # True when the compiled kernels are in use
 datatypical.JIT_CACHE_ENABLED      # True when compiled kernels are cached on disk
 datatypical.PCHA is not None       # True when archetypal_method='aa' can run
@@ -689,9 +697,26 @@ term `1 - ||m_T|| / sqrt(2)`, `m = min(x, 1 - x)` over the two corner features
 T, is a game on two players, `phi_a = (u({a}) + u({a, b}) - u({b})) / 2`. The
 values sum to `archetypal_rank` exactly.
 
+The weights `w` behind `archetypal_rank` are this projection, not `W_`. `W_`
+holds the archetypal analysis's own coefficients (PCHA's convex weights, or
+the NMF factor), which describe how the fit reconstructs each sample; the
+projection is what the score uses, because it applies unchanged to new rows.
+The two can differ: on the Wine data the dominant archetype differs for 35 of
+178 samples. Read the membership behind a rank from the projection.
+
+The corner features T are, by default, the two highest-variance features that
+reach both bounds of the scaled range on the training rows (since v0.8.4 the
+training rows' choice is kept for `transform()`). `corner_features='archetypes'`
+reads the two features on which the archetypes differ most, and a list of one
+or two names fixes them; `corner_features_` reports the features read. Pass
+`archetypal_explanation_baseline='mean'` to measure each feature from the
+training mean rather than from the bottom of its range: the values then sum to
+`archetypal_rank` minus `archetypal_explanation_base_`.
+
 `prototypical_rank = 0.5 * (1 - min(dist / d95, 1)) + 0.5 * cos`, with dist the
 Euclidean distance to the nearest prototype p, d95 its 95th percentile over the
-training set, and cos the cosine similarity to the most similar prototype q.
+training set (used for new rows too since v0.8.4; 0.8.3's `transform()` took it
+over the rows it was given), and cos the cosine similarity to the most similar prototype q.
 The game keeps both halves and squares the distance, which makes it additive
 apart from a constant the Shapley value splits evenly:
 
@@ -1109,7 +1134,7 @@ Used in:
 | `shapley_top_n` | 0.5 (50%) | None (all) |
 | `shapley_compute_formative` | False | True |
 
-Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, best of two fits. They were measured with v0.8.2 and stand for v0.8.3, which adds a few milliseconds of explanation work and no longer computes an unused pass over all pairs of samples.
+Measured on an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, best of two fits. They were measured with v0.8.2 and stand for v0.8.3 and v0.8.4: 0.8.3 adds a few milliseconds of explanation work and no longer computes an unused pass over all pairs of samples, and 0.8.4 adds one pass over the training rows at the end of a fit.
 
 | Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
 | --- | --- | --- | --- | --- |
@@ -1261,8 +1286,8 @@ where V is the cost of one incremental value-function update.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `nmf_rank` | int | 8 | Number of archetypal basis vectors |
-| `n_prototypes` | int | 20 | Number of prototypes to select |
+| `nmf_rank` | int | 8 | Number of archetypal basis vectors; not a recommendation, and `archetypal_rank` is not comparable across counts (refit on subsamples to check the archetypes reproduce) |
+| `n_prototypes` | int | 20 | Number of prototypes to select; `prototypical_rank` moves with it, and on uncentred [0, 1] data `auto_n_prototypes='kneedle'` can cut it to 1 |
 | `scale` | str | "minmax" | Scaling method |
 | `distance_metric` | str | "euclidean" | Distance metric for scores |
 | `similarity_metric` | str | "cosine" | Similarity metric for prototypes |
@@ -1301,6 +1326,8 @@ where V is the cost of one incremental value-function update.
 | `formative_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` sampling (v0.8.0) |
 | `explanation_method` | str | `'exact'` | `'exact'` closed forms, or `'monte_carlo'` sampling (v0.8.2) |
 | `explanation_game` | str | `'fitted'` | `'fitted'` games on the scores and fitted model, or `'legacy'` 0.8.2 games (v0.8.3) |
+| `corner_features` | str/list | `None` | Features the archetypal corner term reads: `None` the 0.8.3 rule, `'archetypes'` where the archetypes differ most, or one or two names (v0.8.4) |
+| `archetypal_explanation_baseline` | str | `'minimum'` | Measure each feature from the bottom of its scaled range, or `'mean'` from the training mean; ranks unchanged (v0.8.4) |
 
 ### Significance Selection (v0.7.6)
 
@@ -1567,5 +1594,5 @@ Convergence: O(1/√M) by CLT.
 
 ---
 
-*DataTypical v0.8.3 - Computation Guide*
+*DataTypical v0.8.4 - Computation Guide*
 *A comprehensive reference for advanced users*

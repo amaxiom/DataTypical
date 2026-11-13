@@ -1,6 +1,6 @@
 # DataTypical Quick Reference
 
-**Version 0.8.3** | Daily reference for exploring instance significance
+**Version 0.8.4** | Daily reference for exploring instance significance
 
 ---
 
@@ -89,7 +89,7 @@ dt = DataTypical(fast_mode=False)
 dt = DataTypical(shapley_mode=True)
 ```
 
-**Measured** (an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, with v0.8.2; they stand for v0.8.3):
+**Measured** (an Intel Core Ultra 9 285K (24 threads, 64 GB) under Windows 11, Python 3.13.9, NumPy 2.3.5 and Numba 0.62.1, on 2026-10-22, ten features, with v0.8.2; they stand for v0.8.3 and v0.8.4):
 
 | Samples | Ranks only | Ranks, `fast_mode` | Shapley | Shapley, `fast_mode` |
 | --- | --- | --- | --- | --- |
@@ -120,6 +120,8 @@ count needs tuning.
 | `formative_method` | `'exact'` | `'monte_carlo'` reproduces pre-0.8.0 sampling |
 | `explanation_method` | `'exact'` | `'monte_carlo'` reproduces pre-0.8.2 sampling |
 | `explanation_game` | `'fitted'` | `'legacy'` plays the 0.8.2 explanation games |
+| `corner_features` | `None` | `'archetypes'` or one or two names fix the corner term's features (v0.8.4) |
+| `archetypal_explanation_baseline` | `'minimum'` | `'mean'` measures archetypal explanations from the training mean (v0.8.4) |
 
 ### For Stereotypical Analysis
 ```python

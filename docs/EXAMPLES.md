@@ -386,7 +386,8 @@ ax.figure.savefig('historical_structure.png', dpi=300, bbox_inches='tight')
 
 ### Step 2: Score New Batch
 ```python
-# Transform new batch with fitted model
+# Transform new batch with fitted model. Since v0.8.4 every row is scored on
+# the historical data's scales, so the result does not depend on the batch size.
 X_new = new_batch[feature_cols]
 results_new = dt.transform(X_new)
 
