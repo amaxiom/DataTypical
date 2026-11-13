@@ -1,5 +1,5 @@
 """
-DataTypical v0.8.3 --- Dual-Perspective Significance with Shapley Explanations
+DataTypical v0.8.4 --- Dual-Perspective Significance with Shapley Explanations
 ===========================================================================
 
 Revolutionary framework combining geometric and influence-based significance.
@@ -12,6 +12,24 @@ Key Innovation:
 Two complementary perspectives:
 1. LOCAL: "This sample IS significant because features X, Y contribute most"
 2. GLOBAL: "This sample CREATES significance by defining the distribution and boundary"
+
+What's new in v0.8.4:
+- FIXED: transform() scored each row on the scales of the rows passed with
+  it rather than the training set's: the corner features of the archetypal
+  score, the prototype distance scale d95, and the stereotypical rank's
+  target and largest distance. A row's ranks depended on which other rows
+  were in the call, and a row transformed on its own ranked 0.0 (or 1.0 for
+  a 'max' or 'min' target) on stereotypicality whatever its value. The fit
+  now records the training set's scales and transform() uses them.
+  fit_transform() is unchanged to the bit.
+- FIXED: transform() refused rows that lack a stereotype_column held out of
+  the features; their stereotypical_rank is now NaN, with a warning.
+- NEW: corner_features chooses the features the corner term reads (None,
+  the 0.8.3 rule; 'archetypes'; or one or two names), and
+  archetypal_explanation_baseline='mean' measures the archetypal
+  explanations from the training mean. Both default to 0.8.3's behaviour.
+- NEW: a warning when the default corner rule picks a feature with very few
+  distinct values, such as a logged count with zeros.
 
 What's new in v0.8.3:
 - CHANGED: the archetypal and prototypical feature-level explanations play
@@ -150,7 +168,7 @@ Sections:
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields as dc_fields
-from typing import Iterable, List, Optional, Dict, Tuple, Union, Callable
+from typing import Any, Iterable, List, Optional, Dict, Tuple, Union, Callable, Sequence
 
 import heapq
 import math
@@ -171,7 +189,7 @@ from sklearn.exceptions import ConvergenceWarning
 # configuration with it and the packaging metadata reads it, so a release can
 # no longer ship fits labelled with the previous version. Before v0.8.2 it was
 # typed out separately in each place, with nothing keeping them in step.
-__version__ = "0.8.3"
+__version__ = "0.8.4"
 
 
 # ============================================================
@@ -1989,17 +2007,132 @@ def _corner_feature_indices(X: np.ndarray) -> np.ndarray:
     return np.argsort(-var)[:2] if X.shape[1] >= 2 else np.array([0])
 
 
+# v0.8.4: a corner feature chosen by the default rule is reported as coarse
+# when it has fewer distinct values than this, or than half the rows when
+# there are fewer than forty. Logged counts with zeros reach both bounds of
+# [0, 1] and often have the highest scaled variance because of the gap the
+# offset leaves below the smallest positive count, so the default rule tends
+# to pick them; the corner term then reads how a count is recorded.
+_CORNER_COARSE_DISTINCT = 20
+
+
+def _check_corner_features_param(value) -> None:
+    """Validate corner_features: None, 'archetypes', or one or two features."""
+    if value is None or (isinstance(value, str) and value == "archetypes"):
+        return
+    if isinstance(value, str):
+        raise ConfigError(
+            f"corner_features={value!r} is not recognised. Use None, the "
+            "default, for the two highest-variance full-range features; "
+            "'archetypes' for the two features on which the fitted archetypes "
+            "differ most; or a list of one or two feature names or positions, "
+            f"such as [{value!r}]."
+        )
+    try:
+        items = list(value)
+    except TypeError:
+        raise ConfigError(
+            f"corner_features must be None, 'archetypes' or a list of one or "
+            f"two feature names or positions, got {value!r}."
+        ) from None
+    if not 1 <= len(items) <= 2:
+        raise ConfigError(
+            f"corner_features names {len(items)} features; the corner term "
+            "reads one or two."
+        )
+    for item in items:
+        if isinstance(item, (bool, np.bool_)) or not isinstance(item, (str, int, np.integer)):
+            raise ConfigError(
+                f"corner_features entries must be feature names or integer "
+                f"positions, got {item!r}."
+            )
+    if len(set(items)) != len(items):
+        raise ConfigError(f"corner_features names a feature twice: {items!r}.")
+
+
+def _corner_features_from_archetypes(archetypes: np.ndarray) -> np.ndarray:
+    """
+    v0.8.4, corner_features='archetypes': the two features over which the
+    fitted archetypes differ most, by the variance of each column of H_ over
+    the archetypes, ties broken by position. One feature for one-feature data.
+    """
+    H = np.atleast_2d(np.asarray(archetypes, dtype=np.float64))
+    d = H.shape[1]
+    if d < 2:
+        return np.array([0], dtype=np.intp)
+    spread = H.var(axis=0)
+    order = np.lexsort((np.arange(d), -spread))
+    return order[:2].astype(np.intp)
+
+
+def _coarse_corner_features(X: np.ndarray, take: np.ndarray) -> List[Tuple[int, int]]:
+    """The chosen corner features with few distinct values: (position, count)."""
+    n = X.shape[0]
+    limit = min(_CORNER_COARSE_DISTINCT, max(2, n // 2))
+    out = []
+    for j in np.asarray(take, dtype=np.intp).ravel():
+        distinct = int(np.unique(np.round(X[:, j], 12)).size)
+        if distinct < limit:
+            out.append((int(j), distinct))
+    return out
+
+
+def _corner_explanations_from_baseline(
+    X: np.ndarray,
+    corner_features: np.ndarray,
+    baseline: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    v0.8.4: exact Shapley values of the corner term when an absent feature
+    takes its baseline value instead of dropping out, and the term's value at
+    the baseline.
+
+    With z_F the sample's values on F and the baseline's elsewhere, the game
+    is u(F) = 1 - ||m(z_F) on T|| / sqrt(t), m = min(x, 1 - x), on the t
+    corner features T (two, or one for single-feature data); every other
+    feature is a null player. Returns ``(phi, base)`` with
+    ``phi.sum(axis=1) + base`` equal to the corner term.
+    """
+    X = np.atleast_2d(np.asarray(X, dtype=np.float64))
+    b = np.asarray(baseline, dtype=np.float64).ravel()
+    take = np.asarray(corner_features, dtype=np.intp).ravel()
+    phi = np.zeros(X.shape, dtype=np.float64)
+    m = np.minimum(X[:, take], 1.0 - X[:, take])
+    mb = np.minimum(b[take], 1.0 - b[take])
+    if take.size >= 2:
+        root = math.sqrt(2.0)
+        u_0 = 1.0 - math.sqrt(mb[0] ** 2 + mb[1] ** 2) / root
+        u_a = 1.0 - np.sqrt(m[:, 0] ** 2 + mb[1] ** 2) / root
+        u_b = 1.0 - np.sqrt(mb[0] ** 2 + m[:, 1] ** 2) / root
+        u_ab = 1.0 - np.sqrt(m[:, 0] ** 2 + m[:, 1] ** 2) / root
+        phi[:, take[0]] = 0.5 * ((u_a - u_0) + (u_ab - u_b))
+        phi[:, take[1]] = 0.5 * ((u_b - u_0) + (u_ab - u_a))
+    else:
+        u_0 = 1.0 - mb[0]
+        phi[:, take[0]] = (1.0 - m[:, 0]) - u_0
+    return phi, np.full(X.shape[0], u_0, dtype=np.float64)
+
+
 def _archetype_weight_terms(
     X: np.ndarray,
     archetypes: np.ndarray,
     nmf_model=None,
-) -> Tuple[np.ndarray, np.ndarray]:
+    baseline: Optional[np.ndarray] = None,
+):
     """
     One term per feature of the membership part of the archetypal score.
 
     Returns ``(terms, wmax)`` with ``terms.sum(axis=1)`` equal to ``wmax``, the
     largest share of a sample's archetype weights, which archetypal_rank
     weights by 0.7.
+
+    v0.8.4: with ``baseline`` (one row in the scaled space, normally the
+    training mean) each term is measured from the baseline instead of from
+    zero, the bottom of the scaled range: ``(x_f - b_f) c_f`` in place of
+    ``x_f c_f``, with the same per-sample coefficients ``c``. The return is
+    then ``(terms, wmax, base)`` with ``terms.sum(axis=1) + base`` equal to
+    ``wmax`` and ``base = b . c``. Rows the NMF solver left far from its
+    optimum keep their profile-spread terms and a base of zero.
 
     For PCHA and the convex hull the weights are the score's least-squares
     projection, w = x B with B = H^T (H H^T + 1e-6 I)^+, clipped at zero. B is
@@ -2012,6 +2145,8 @@ def _archetype_weight_terms(
     they sum to it exactly despite its tolerance. A sample whose weights are
     all zero has wmax = 0 in the score and gets zero terms.
     """
+    if baseline is not None:
+        return _archetype_weight_terms_from_baseline(X, archetypes, nmf_model, baseline)
     X = np.atleast_2d(np.asarray(X, dtype=np.float64))
     H = np.asarray(archetypes, dtype=np.float64)
     n, d = X.shape
@@ -2061,6 +2196,76 @@ def _archetype_weight_terms(
     return terms, wmax
 
 
+def _archetype_weight_terms_from_baseline(
+    X: np.ndarray,
+    archetypes: np.ndarray,
+    nmf_model,
+    baseline: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    v0.8.4: _archetype_weight_terms measured from ``baseline``. The weights,
+    the dominant archetype and the normaliser are the score's own, exactly as
+    without a baseline; only where each feature's term is measured from moves.
+    """
+    X = np.atleast_2d(np.asarray(X, dtype=np.float64))
+    H = np.asarray(archetypes, dtype=np.float64)
+    b = np.asarray(baseline, dtype=np.float64).ravel()
+    n, d = X.shape
+    if b.size != d:
+        raise ValueError(f"baseline has {b.size} entries for {d} features.")
+    coef = np.zeros((n, d), dtype=np.float64)
+    terms = np.zeros((n, d), dtype=np.float64)
+    base = np.zeros(n, dtype=np.float64)
+    rows = np.arange(n)
+
+    if nmf_model is None:
+        B = H.T @ np.linalg.pinv(H @ H.T + 1e-6 * np.eye(H.shape[0]))   # (d, k)
+        W = np.maximum(X @ B, 0.0)
+        S = W.sum(axis=1)
+        k = W.argmax(axis=1)
+        ok = S > 0.0
+        coef[ok] = B[:, k[ok]].T / S[ok, None]
+        terms[ok] = (X[ok] - b) * coef[ok]
+        base[ok] = coef[ok] @ b
+    else:
+        W = np.asarray(nmf_model.transform(np.maximum(X, 0.0)), dtype=np.float64)
+        S = W.sum(axis=1)
+        k = W.argmax(axis=1)
+        ok = S > 0.0
+        active = W > 0.0
+        patterns, group = np.unique(active, axis=0, return_inverse=True)
+        group = np.asarray(group).ravel()
+        for g, pattern in enumerate(patterns):
+            members = np.where((group == g) & ok)[0]
+            if members.size == 0:
+                continue
+            Ha = H[pattern]
+            Ba = Ha.T @ np.linalg.pinv(Ha @ Ha.T)                       # (d, a)
+            position = np.cumsum(pattern) - 1
+            c = Ba[:, position[k[members]]].T                          # (m, d)
+            total = (X[members] * c).sum(axis=1)
+            wk = W[members, k[members]]
+            fine = np.isfinite(total) & (total > 0.0)
+            c[fine] *= (wk[fine] / total[fine])[:, None]
+            c /= S[members, None]
+            t = (X[members] - b) * c
+            bm = c @ b
+            if not fine.all():
+                # As without a baseline: the weight spread over the
+                # archetype's own profile, with nothing left at the baseline.
+                profile = H[k[members[~fine]]]
+                mass = profile.sum(axis=1, keepdims=True)
+                mass[mass == 0.0] = 1.0
+                t[~fine] = (wk[~fine, None] * profile / mass) / S[members[~fine], None]
+                bm[~fine] = 0.0
+            terms[members] = t
+            base[members] = bm
+
+    wmax = np.zeros(n, dtype=np.float64)
+    wmax[ok] = W[rows[ok], k[ok]] / S[ok]
+    return terms, wmax, base
+
+
 def _corner_explanations(X: np.ndarray, corner_features: np.ndarray) -> np.ndarray:
     """
     Exact Shapley values of the archetypal score's corner term.
@@ -2092,7 +2297,9 @@ def exact_explanations_archetypal_fitted(
     archetypes: np.ndarray,
     nmf_model=None,
     corner_features: Optional[np.ndarray] = None,
-) -> np.ndarray:
+    baseline: Optional[np.ndarray] = None,
+    return_base: bool = False,
+):
     """
     Exact Shapley values for the archetypal explanation game on the fitted
     model, the default from v0.8.3 (``explanation_game='fitted'``).
@@ -2109,6 +2316,16 @@ def exact_explanations_archetypal_fitted(
     _corner_explanations). Both parts are exact, and by efficiency each
     sample's values sum to its archetypal_rank.
 
+    Where each feature is measured from (v0.8.4). By default a feature absent
+    from a coalition contributes nothing, which measures every feature from
+    the bottom of its scaled range: a feature whose projection coefficient on
+    the sample's dominant archetype is negative can contribute only zero or
+    less, however far below average its value is. Pass ``baseline``, normally
+    the training mean of the scaled features, to measure each feature from
+    that row instead; an absent feature then takes its baseline value, the
+    values sum to archetypal_rank minus the game's value at the baseline, and
+    ``return_base=True`` returns that per-sample base value as well.
+
     Parameters
     ----------
     X : np.ndarray
@@ -2122,18 +2339,30 @@ def exact_explanations_archetypal_fitted(
     corner_features : np.ndarray, optional
         Indices of the corner term's features. Defaults to those chosen on X;
         pass the ones chosen on the whole training set when X holds only some
-        of its rows.
+        of its rows, or the fit's ``corner_feature_indices_`` when it set them.
+    baseline : np.ndarray, optional
+        v0.8.4: one row in the scaled space from which each feature is
+        measured. None (default) keeps the 0.8.3 game.
+    return_base : bool
+        v0.8.4: with ``baseline``, also return the per-sample base value.
 
     Returns
     -------
     np.ndarray
-        Exact Shapley values, shape (n_samples, n_features).
+        Exact Shapley values, shape (n_samples, n_features); with
+        ``return_base``, the pair ``(values, base)``.
     """
     X = np.atleast_2d(np.asarray(X, dtype=np.float64))
     take = (_corner_feature_indices(X) if corner_features is None
             else np.asarray(corner_features, dtype=np.intp))
-    terms, _ = _archetype_weight_terms(X, archetypes, nmf_model)
-    return 0.7 * terms + 0.3 * _corner_explanations(X, take)
+    if baseline is None:
+        terms, _ = _archetype_weight_terms(X, archetypes, nmf_model)
+        phi = 0.7 * terms + 0.3 * _corner_explanations(X, take)
+        return (phi, np.zeros(X.shape[0], dtype=np.float64)) if return_base else phi
+    terms, _, base = _archetype_weight_terms(X, archetypes, nmf_model, baseline=baseline)
+    corner_phi, corner_base = _corner_explanations_from_baseline(X, take, baseline)
+    phi = 0.7 * terms + 0.3 * corner_phi
+    return (phi, 0.7 * base + 0.3 * corner_base) if return_base else phi
 
 
 def _nearest_prototype(X: np.ndarray, P: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -2509,6 +2738,17 @@ _PREFIX_VALUE_FUNCS = {
 @dataclass
 class DataTypical:
     # ---- Core Config ----
+    # v0.8.4, on choosing the two counts. Neither default is a recommendation.
+    # archetypal_rank is not comparable across numbers of archetypes: on two
+    # clinical cohorts of about 300 and 1,000 patients, nmf_rank=2 and 8 gave
+    # archetypal_rank at Spearman 0.26 and 0.25, and the 8 archetypes did not
+    # reproduce when refitted on 80% subsamples (median worst matched
+    # correlation about 0.4, against 0.9 or more for 2 to 4). Refit on
+    # subsamples and match the archetypes before reading a count's results.
+    # prototypical_rank moves with n_prototypes too (Spearman 0.76 to 0.92
+    # against 20 for 5 to 30 prototypes on the smaller cohort), and on
+    # uncentred [0, 1] data the facility-location gains collapse after the
+    # first prototype, so auto_n_prototypes='kneedle' can cut the count to 1.
     nmf_rank: int = 8
     n_prototypes: int = 20
     scale: str = "minmax"
@@ -2590,6 +2830,33 @@ class DataTypical:
     #            paper's three datasets).
     # The stereotypical explanation game is the same under both.
     explanation_game: str = "fitted"
+    # v0.8.4: which features the archetypal score's corner term reads.
+    #   None         (default) as always: the two highest-variance features
+    #                that reach both bounds of [0, 1], chosen on the training
+    #                rows (0.8.3 re-chose them on whatever rows transform() was
+    #                given). Count columns with zeros that were logged before
+    #                fitting can win this on their spread alone; a warning
+    #                names a chosen feature with very few distinct values.
+    #   'archetypes' the two features on which the fitted archetypes differ
+    #                most (largest variance of H_ over archetypes), chosen
+    #                once at fit and used by fit, transform and explanations.
+    #   names        one or two feature names, or positions among the fitted
+    #                features (corner_features_ reports the names), fixed.
+    # Only None leaves every archetypal_rank where 0.8.3 put it.
+    corner_features: Optional[Union[str, Sequence[Union[str, int]]]] = None
+    # v0.8.4: where the fitted archetypal explanation game measures each
+    # feature from.
+    #   'minimum' (default) the bottom of the feature's scaled range, as in
+    #             0.8.3: a feature whose projection coefficient on the
+    #             sample's dominant archetype is negative can contribute only
+    #             zero or less, and the values sum to archetypal_rank.
+    #   'mean'    the training mean of the scaled feature, so a value below
+    #             the mean on such a feature contributes positively. The
+    #             values then sum to archetypal_rank minus a per-sample base
+    #             value, the score's game at the mean, kept in
+    #             archetypal_explanation_base_. Ranks do not change.
+    # 'mean' needs explanation_game='fitted' and explanation_method='exact'.
+    archetypal_explanation_baseline: str = "minimum"
 
     # ---- Performance Mode (NEW in v0.7) ----
     fast_mode: bool = False
@@ -2643,6 +2910,17 @@ class DataTypical:
     # and each term's largest weight over them, with which transform_text
     # recognises the training corpus and scales new documents; and
     # _explained_rows_, which training rows the explanations were computed for.
+    # v0.8.4 adds three more the same way: corner_features_, the names of the
+    # features the archetypal score's corner term read at fit (reported under
+    # every corner_features setting); corner_feature_indices_, their
+    # positions when corner_features fixed them (None under the default rule,
+    # whose choice is kept in _transform_reference_); and archetypal_explanation_base_,
+    # the per-sample base value of the archetypal explanations when
+    # archetypal_explanation_baseline='mean' (None otherwise). A fourth,
+    # _transform_reference_, holds the training set's own scales (the corner
+    # features of the default rule, the prototype distance scale d95 and the
+    # stereotypical rank's normaliser), so transform() scores every row on
+    # the training set's terms rather than on those of the rows passed with it.
     label_df_: Optional[pd.DataFrame] = field(default=None, init=False)
     text_metadata_: Optional[pd.DataFrame] = field(default=None, init=False)
     stereotype_keyword_scores_: Optional[np.ndarray] = field(default=None, init=False)
@@ -2756,6 +3034,169 @@ class DataTypical:
                 print(f"Auto-detected data_type: '{detected}'")
             return detected
     
+    def _corner_take(self, X_euc: np.ndarray) -> np.ndarray:
+        """
+        v0.8.4: the corner term's features for scoring ``X_euc``. When
+        corner_features fixed them at fit, those are used everywhere. Under
+        the default rule they are the ones the rule chose on the training
+        rows, recorded at the end of the fit; during the fit itself, and for a
+        fit saved before 0.8.4, the rule chooses on the rows being scored, as
+        0.8.3 always did. 0.8.3 chose on whatever rows transform() was given,
+        so a row's archetypal_rank depended on the others passed with it.
+        """
+        fixed = getattr(self, "corner_feature_indices_", None)
+        if fixed is not None:
+            return np.asarray(fixed, dtype=np.intp)
+        ref = getattr(self, "_transform_reference_", None)
+        if ref is not None and ref.get("corner_take") is not None:
+            return np.asarray(ref["corner_take"], dtype=np.intp)
+        return _corner_feature_indices(X_euc)
+
+    def _transform_reference(self) -> Optional[Dict[str, Any]]:
+        """
+        v0.8.4: the training set's scales for transform(), or None. A fit
+        saved before 0.8.4 has none, so its rows are scaled by the rows passed
+        with them, as 0.8.3 did, and that is said. During a fit it is None
+        and the fit scores its own rows exactly as before.
+        """
+        missing = object()
+        ref = getattr(self, "_transform_reference_", missing)
+        if ref is missing:
+            warnings.warn(
+                "This model was fitted before DataTypical 0.8.4 and holds none "
+                "of the training set's scales, so transform() scales these rows "
+                "by the rows passed with them, as 0.8.3 did: a row's ranks "
+                "depend on which other rows are in the call. Refit with 0.8.4 "
+                "to score each row on the training set's terms.",
+                RuntimeWarning, stacklevel=4)
+            return None
+        return ref
+
+    def _build_transform_reference(
+        self,
+        X_scaled: ArrayLike,
+        stereotype_source: Optional[pd.Series]
+    ) -> Dict[str, Any]:
+        """
+        v0.8.4: the training set's scales, computed from the training rows as
+        transform() prepares them and by the same expressions
+        _score_with_fitted applies to a batch, so transforming the training
+        set itself (as fit_transform does) gives exactly the 0.8.3 numbers.
+        """
+        run_arch  = self.selected_significance is None or self.selected_significance == "archetypal"
+        run_proto = self.selected_significance is None or self.selected_significance == "prototypical"
+        run_stereo = self.selected_significance is None or self.selected_significance == "stereotypical"
+        X_euc = X_scaled.toarray().astype(np.float64, copy=False) \
+            if (sp is not None and sp.isspmatrix(X_scaled)) else np.asarray(X_scaled, dtype=np.float64)
+        ref: Dict[str, Any] = {"corner_take": None, "d95": None, "stereotype": None}
+        if run_arch and self.H_ is not None:
+            ref["corner_take"] = _corner_feature_indices(X_euc)
+        if run_proto and self.prototype_indices_ is not None:
+            P_mat = self.prototype_features_ if self.prototype_features_ is not None \
+                else X_euc[self.prototype_indices_]
+            best_euc = _euclidean_min_to_set_dense(X_euc, P_mat, max_memory_mb=self.max_memory_mb)
+            ref["d95"] = np.percentile(best_euc, 95) or 1.0
+        if run_stereo:
+            ref["stereotype"] = self._stereotype_normaliser(X_scaled, stereotype_source)
+        _cleanup_memory(X_euc)
+        return ref
+
+    def _reference_from_table(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """v0.8.4: _build_transform_reference for the training frame."""
+        X_t, _ = self._preprocess_table_transform(df)
+        source = self._get_stereotype_source_table(df) if self.stereotype_column is not None else None
+        return self._build_transform_reference(X_t, source)
+
+    def _reference_from_text(self, corpus: List[str]) -> Dict[str, Any]:
+        """v0.8.4: _build_transform_reference for the training corpus."""
+        X_t, _ = self._preprocess_text_transform(corpus)
+        source = None
+        if self.stereotype_column is not None:
+            source = self.text_metadata_[self.stereotype_column]
+        elif self.stereotype_keywords is not None:
+            # As transform() recomputes them; the fit has already warned
+            # about any keyword missing from the vocabulary.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                source = pd.Series(self._compute_keyword_scores(
+                    self.vectorizer_.transform(corpus), corpus, self.stereotype_keywords))
+        return self._build_transform_reference(X_t, source)
+
+    def _feature_names_for(self, n_features: int) -> List[str]:
+        """Names of the scaled feature columns, or their positions as strings."""
+        vec = getattr(self, "vectorizer_", None)
+        if vec is not None and hasattr(vec, "get_feature_names_out"):
+            names = [str(t) for t in vec.get_feature_names_out()]
+            if len(names) == n_features:
+                return names
+        cols = getattr(self, "feature_columns_", None)
+        if cols is not None:
+            # The scaled matrix holds only the columns the fit kept: constant
+            # columns are dropped, so read the names through keep_mask_.
+            keep = getattr(self, "keep_mask_", None)
+            if keep is not None and len(keep) == len(cols):
+                cols = [c for c, k in zip(cols, keep) if k]
+            if len(cols) == n_features:
+                return [str(c) for c in cols]
+        return [str(j) for j in range(n_features)]
+
+    def _resolve_corner_features(self, X_euc: np.ndarray) -> None:
+        """
+        v0.8.4: fix the corner term's features for this fit, from
+        corner_features, and report them in corner_features_. Called once the
+        archetypes exist, before anything is scored.
+        """
+        n, d = X_euc.shape
+        names = self._feature_names_for(d)
+        spec = self.corner_features
+        if spec is None:
+            self.corner_feature_indices_ = None
+            used = _corner_feature_indices(X_euc)
+            coarse = _coarse_corner_features(X_euc, used)
+            # Term weights are sparse by nature, so a text fit is not warned.
+            if coarse and getattr(self, "vectorizer_", None) is None:
+                described = ", ".join(f"{names[j]} ({c} distinct values)" for j, c in coarse)
+                warnings.warn(
+                    f"The archetypal score's corner term reads "
+                    f"{' and '.join(names[j] for j in used)}, the highest-variance "
+                    f"features that span the scaled range, and {described} "
+                    f"{'is' if len(coarse) == 1 else 'are'} coarsely recorded. "
+                    "Logged counts with zeros often win that choice on the gap "
+                    "below their smallest positive value, and the corner term "
+                    "then carries how a count is recorded into archetypal_rank "
+                    "and its explanations. Pass corner_features='archetypes' to "
+                    "read the features on which the archetypes differ most, or "
+                    "name the features. The default is unchanged from 0.8.3.",
+                    UserWarning, stacklevel=4)
+        elif isinstance(spec, str):          # 'archetypes', checked at construction
+            if self.H_ is None:
+                raise ConfigError(
+                    "corner_features='archetypes' needs fitted archetypes, and "
+                    "this fit has none.")
+            used = _corner_features_from_archetypes(self.H_)
+            self.corner_feature_indices_ = used
+        else:
+            used = []
+            for item in spec:
+                if isinstance(item, str):
+                    if item not in names:
+                        raise ConfigError(
+                            f"corner_features names {item!r}, which is not one of "
+                            f"the {d} fitted features.")
+                    used.append(names.index(item))
+                else:
+                    j = int(item)
+                    if not 0 <= j < d:
+                        raise ConfigError(
+                            f"corner_features position {j} is outside the {d} "
+                            "fitted features.")
+                    used.append(j)
+            if len(set(used)) != len(used):
+                raise ConfigError(f"corner_features names a feature twice: {list(spec)!r}.")
+            used = np.asarray(used, dtype=np.intp)
+            self.corner_feature_indices_ = used
+        self.corner_features_ = [names[j] for j in np.asarray(used, dtype=np.intp)]
+
     def _reset_fit_state(self) -> None:
         """
         Clear everything a previous fit left behind.
@@ -2782,6 +3223,10 @@ class DataTypical:
         self._text_doc_hashes_ = None
         self._text_col_max_ = None
         self._explained_rows_ = None
+        self.corner_features_ = None
+        self.corner_feature_indices_ = None
+        self.archetypal_explanation_base_ = None
+        self._transform_reference_ = None
         self.label_df_ = None
         self.text_metadata_ = None
         self.stereotype_keyword_scores_ = None
@@ -2903,6 +3348,23 @@ class DataTypical:
                 "Use 'fitted', the default, for explanation games built from "
                 "the significance scores and the fitted archetypes and "
                 "prototypes, or 'legacy' for the 0.8.2 games."
+            )
+        _check_corner_features_param(self.corner_features)
+        if self.archetypal_explanation_baseline not in ("minimum", "mean"):
+            raise ConfigError(
+                f"archetypal_explanation_baseline="
+                f"{self.archetypal_explanation_baseline!r} is not recognised. "
+                "Use 'minimum', the default, to measure each feature from the "
+                "bottom of its scaled range, or 'mean' to measure it from the "
+                "training mean."
+            )
+        if self.archetypal_explanation_baseline == "mean" and (
+                self.explanation_game != "fitted" or self.explanation_method != "exact"):
+            raise ConfigError(
+                "archetypal_explanation_baseline='mean' is defined for the "
+                "fitted archetypal game computed exactly, so it needs "
+                "explanation_game='fitted' and explanation_method='exact' "
+                f"(got {self.explanation_game!r} and {self.explanation_method!r})."
             )
 
         _implemented = {
@@ -3143,9 +3605,12 @@ class DataTypical:
                     print("SHAPLEY DUAL-PERSPECTIVE ANALYSIS")
                     print("="*70)
                 self._fit_shapley_dual_perspective(X_scaled, X_l2, df.index)
+
+            # v0.8.4: the training set's scales, for transform()
+            self._transform_reference_ = self._reference_from_table(df)
             self._record_settings(tc)
         return self
-    
+
     def _fit_text(
         self,
         corpus: Union[List[str], Iterable[str]],
@@ -3185,6 +3650,8 @@ class DataTypical:
                     print("="*70)
                 self._fit_shapley_dual_perspective(X_scaled, X_l2, idx)
 
+            # v0.8.4: the training set's scales, for transform()
+            self._transform_reference_ = self._reference_from_text(corpus)
             self._record_settings(tc)
         return self
     
@@ -3231,10 +3698,26 @@ class DataTypical:
             
             # Get stereotype source for transform
             stereotype_source = None
+            stereotype_absent = False
             if self.stereotype_column is not None:
-                stereotype_source = self._get_stereotype_source_table(df)
-            
+                # v0.8.4: a stereotype column held out of the features (a
+                # label) is often unknown for new rows. 0.8.3 refused to
+                # transform them at all; their stereotypical_rank is now NaN
+                # and the other two ranks, which never read it, are computed.
+                if self.stereotype_column in df.columns:
+                    stereotype_source = self._get_stereotype_source_table(df)
+                else:
+                    stereotype_absent = True
+                    warnings.warn(
+                        f"stereotype_column {self.stereotype_column!r} is not a "
+                        "column of these rows, so their stereotypical_rank is "
+                        "NaN. archetypal_rank and prototypical_rank do not read "
+                        "it and are computed as usual.",
+                        UserWarning, stacklevel=3)
+
             ranks = self._score_with_fitted(X_scaled, X_l2, df.index, stereotype_source)
+            if stereotype_absent:
+                ranks["stereotypical_rank"] = np.nan
 
             # Formative ranks for the rows that are training samples
             if self.shapley_mode:
@@ -3738,10 +4221,22 @@ class DataTypical:
         fitted = self.explanation_game == "fitted"
         _arch_terms = _corner_take = None
         _proto_phi = None
+        # v0.8.4: archetypal_explanation_baseline='mean' measures each feature
+        # from the training mean of the scaled data (all rows, like the other
+        # constants of a fitted game); validated to the exact fitted game.
+        _arch_mean = None
+        self.archetypal_explanation_base_ = None
         if fitted and run_arch_exp:
-            _corner_take = _corner_feature_indices(X_dense)
-            _arch_terms, _ = _archetype_weight_terms(
-                X_dense[samples_to_compute], self.H_, self.nmf_model_)
+            _corner_take = self._corner_take(X_dense)
+            if self.archetypal_explanation_baseline == "mean":
+                _arch_mean = X_dense.mean(axis=0)
+                _arch_terms, _, _arch_base = _archetype_weight_terms(
+                    X_dense[samples_to_compute], self.H_, self.nmf_model_,
+                    baseline=_arch_mean)
+                _arch_base *= 0.7
+            else:
+                _arch_terms, _ = _archetype_weight_terms(
+                    X_dense[samples_to_compute], self.H_, self.nmf_model_)
             _arch_terms *= 0.7
         if fitted and run_proto_exp:
             P = np.asarray(self.prototype_features_, dtype=np.float64)
@@ -3766,10 +4261,22 @@ class DataTypical:
                 'additivity_error': 0.0,
             }
             if run_arch_exp:
-                self.Phi_archetypal_explanations_[rows] = (
-                    _arch_terms + 0.3 * _corner_explanations(X_rows, _corner_take) if fitted
-                    else exact_explanations_archetypal(X_rows))
-                self.shapley_info_['archetypal_explanations'] = dict(exact_info)
+                if _arch_mean is not None:
+                    _corner_phi, _corner_base = _corner_explanations_from_baseline(
+                        X_rows, _corner_take, _arch_mean)
+                    self.Phi_archetypal_explanations_[rows] = _arch_terms + 0.3 * _corner_phi
+                    # Rows outside the explained subset stay zero, as their
+                    # explanations do.
+                    self.archetypal_explanation_base_ = np.zeros(n_samples, dtype=np.float64)
+                    self.archetypal_explanation_base_[rows] = _arch_base + 0.3 * _corner_base
+                else:
+                    self.Phi_archetypal_explanations_[rows] = (
+                        _arch_terms + 0.3 * _corner_explanations(X_rows, _corner_take) if fitted
+                        else exact_explanations_archetypal(X_rows))
+                info = dict(exact_info)
+                if _arch_mean is not None:
+                    info['baseline'] = 'mean'
+                self.shapley_info_['archetypal_explanations'] = info
             if run_proto_exp:
                 self.Phi_prototypical_explanations_[rows] = (
                     _proto_phi if fitted else exact_explanations_prototypical(X_rows))
@@ -4069,6 +4576,8 @@ class DataTypical:
                     print("="*70)
                 self._fit_shapley_dual_perspective(X_scaled, X_l2, idx)
 
+            # v0.8.4: the training set's scales, for transform()
+            self._transform_reference_ = self._reference_from_text(corpus)
             self._record_settings(tc)
         return self
 
@@ -4219,6 +4728,8 @@ class DataTypical:
             "shapley_early_stopping_patience","shapley_early_stopping_tolerance",
             "shapley_compute_formative","fast_mode","archetypal_method",
             "formative_method", "explanation_method", "explanation_game",
+            # v0.8.4
+            "corner_features", "archetypal_explanation_baseline",
             # v0.8.0: feature_weights was missing, so from_config(to_config())
             # silently dropped it and produced a different fit. On a five-feature
             # frame that moved archetypal_rank by 0.33 and prototypical_rank by
@@ -4401,11 +4912,37 @@ class DataTypical:
                     f"got: '{self.stereotype_target}'"
                 )
 
+    def _stereotype_normaliser(
+        self,
+        X_scaled: ArrayLike,
+        stereotype_source: Optional[pd.Series]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        v0.8.4: what _compute_stereotypical_rank takes from the rows it
+        scores, computed on the training rows: the extremeness range, or the
+        target with the largest distance from it and the resolution that
+        distance is tested against. None when no training value is usable.
+        """
+        if stereotype_source is None:
+            X_dense = X_scaled.toarray() if (sp is not None and sp.isspmatrix(X_scaled)) else X_scaled
+            s = np.max(np.abs(X_dense - 0.5), axis=1) * 2.0
+            return {"mode": "extremeness", "s_min": float(s.min()), "s_max": float(s.max())}
+        values = _stereotype_values_as_float(stereotype_source, self.stereotype_column)
+        if not np.any(~np.isnan(values)):
+            return None
+        target = _stereotype_tau(values, self.stereotype_target)
+        distances = np.abs(values - target)
+        _finite = distances[np.isfinite(distances)]
+        _scale = float(np.max(np.abs(_finite))) if _finite.size else 0.0
+        return {"mode": "target", "tau": target, "max_dist": np.nanmax(distances),
+                "resolution": np.finfo(np.float64).eps * max(_scale, 1.0) * 8.0}
+
     def _compute_stereotypical_rank(
-        self, 
+        self,
         X_scaled: ArrayLike,
         index: pd.Index,
-        stereotype_source: Optional[pd.Series] = None
+        stereotype_source: Optional[pd.Series] = None,
+        reference: Optional[Dict[str, Any]] = None
     ) -> np.ndarray:
         """
         Compute stereotypical ranking based on configuration.
@@ -4431,43 +4968,81 @@ class DataTypical:
         else (Methods 2.3.1, eq. 26). Do not place an outcome-derived quantity in
         ``stereotype_column`` and then evaluate the rank against that outcome on
         held-out rows: the correlation is guaranteed by construction.
+
+        v0.8.4: ``reference``, from _stereotype_normaliser on the training
+        rows, supplies the target and the largest distance from it, so a row's
+        rank no longer depends on the other rows being scored. Without one
+        (during the fit, or for a fit saved before 0.8.4) both come from the
+        rows being scored, as before. 0.8.3 always took them from those rows,
+        so a row transformed on its own ranked 0.0 for a numeric target and
+        1.0 for 'max' or 'min' whatever its value.
         """
         if stereotype_source is None:
             # BACKWARD COMPATIBLE: use extremeness
             X_dense = X_scaled.toarray() if (sp is not None and sp.isspmatrix(X_scaled)) else X_scaled
             s = np.max(np.abs(X_dense - 0.5), axis=1) * 2.0
+            if reference is not None and reference.get("mode") == "extremeness":
+                s_min, s_max = reference["s_min"], reference["s_max"]
+                if (s_max - s_min) > 1e-12:
+                    return np.clip((s - s_min) / (s_max - s_min), 0.0, 1.0)
+                return np.zeros_like(s)
             s_min, s_max = float(s.min()), float(s.max())
             if (s_max - s_min) > 1e-12:
                 return (s - s_min) / (s_max - s_min)
             else:
                 return np.zeros_like(s)
-        
+
         # USER-DIRECTED: Rank toward specific target
         values = _stereotype_values_as_float(stereotype_source, self.stereotype_column)
-        
+
         # Handle NaN values
         valid_mask = ~np.isnan(values)
         if not np.any(valid_mask):
             warnings.warn("All stereotype values are NaN, using zeros")
             return np.zeros(len(values))
-        
+
+        ref = reference if (reference is not None and reference.get("mode") == "target") else None
+
         # The value ranked towards, resolved exactly as the formative game
         # resolves it (v0.8.2).
-        target = _stereotype_tau(values, self.stereotype_target)
+        target = _stereotype_tau(values, self.stereotype_target) if ref is None else ref["tau"]
 
         # Rank by distance to target (inverted: 1 = closest, 0 = furthest)
         distances = np.abs(values - target)
-        max_dist = np.nanmax(distances)
-        
-        # v0.8.1: this used to test max_dist against an ABSOLUTE 1e-12. A rank
-        # is scale-free, but the stereotype column is in the user's own units,
-        # so a column of concentrations or mole fractions could have perfect
-        # structure and still fall under the threshold, collapsing every rank
-        # to 1.0 with no warning. The threshold is now relative to the column's
-        # own magnitude, and saying so is no longer optional.
-        _finite = distances[np.isfinite(distances)]
-        _scale = float(np.max(np.abs(_finite))) if _finite.size else 0.0
-        _resolution = np.finfo(np.float64).eps * max(_scale, 1.0) * 8.0
+        if ref is None:
+            max_dist = np.nanmax(distances)
+
+            # v0.8.1: this used to test max_dist against an ABSOLUTE 1e-12. A
+            # rank is scale-free, but the stereotype column is in the user's
+            # own units, so a column of concentrations or mole fractions could
+            # have perfect structure and still fall under the threshold,
+            # collapsing every rank to 1.0 with no warning. The threshold is
+            # now relative to the column's own magnitude, and saying so is no
+            # longer optional.
+            _finite = distances[np.isfinite(distances)]
+            _scale = float(np.max(np.abs(_finite))) if _finite.size else 0.0
+            _resolution = np.finfo(np.float64).eps * max(_scale, 1.0) * 8.0
+        else:
+            max_dist, _resolution = ref["max_dist"], ref["resolution"]
+            # Beyond the training maximum is as far towards 'max' as the
+            # maximum itself, and likewise for 'min'.
+            if isinstance(self.stereotype_target, str):
+                beyond = (values > target) if self.stereotype_target == "max" else (values < target)
+                distances = np.where(beyond, 0.0, distances)
+            else:
+                beyond = np.zeros(len(values), dtype=bool)
+            farther = valid_mask & (distances > max_dist)
+            if beyond.any() or farther.any():
+                warnings.warn(
+                    f"{int(np.count_nonzero(beyond | farther))} of {len(values)} "
+                    f"row(s) have a stereotype_column {self.stereotype_column!r} "
+                    "value outside what the training rows spanned. "
+                    f"{int(np.count_nonzero(farther))} lie farther from the target "
+                    "than any training row and rank 0.0; "
+                    f"{int(np.count_nonzero(beyond))} lie beyond a 'max' or 'min' "
+                    "target and rank 1.0, as the training extreme does. Refit on "
+                    "data covering this range if these rows matter.",
+                    RuntimeWarning, stacklevel=4)
         if max_dist > _resolution:
             stereotype_rank = 1.0 - (distances / max_dist)
         else:
@@ -4478,8 +5053,11 @@ class DataTypical:
                 "column has real structure at this magnitude, rescale it before "
                 "fitting." % (self.stereotype_column, max_dist),
                 RuntimeWarning, stacklevel=3)
-            stereotype_rank = np.ones_like(distances, dtype=np.float64)
-        
+            if ref is None:
+                stereotype_rank = np.ones_like(distances, dtype=np.float64)
+            else:
+                stereotype_rank = np.where(distances <= _resolution, 1.0, 0.0)
+
         # Handle NaN entries
         stereotype_rank[~valid_mask] = 0.0
         
@@ -5262,10 +5840,17 @@ class DataTypical:
         Xl2 = X_l2.toarray().astype(np.float64, copy=False) \
             if (sp is not None and sp.isspmatrix(X_l2)) else np.asarray(X_l2, dtype=np.float64)
         n = X_euc.shape[0]
-        
+
+        # v0.8.4: fix the corner term's features before anything is scored
+        if run_arch:
+            self._resolve_corner_features(X_euc)
+        else:
+            self.corner_feature_indices_ = None
+            self.corner_features_ = None
+
         # ---- Helper: archetypal "cornerness" score
         def _corner_scores(Xe: np.ndarray) -> np.ndarray:
-            take = _corner_feature_indices(Xe)
+            take = self._corner_take(Xe)
             X2 = Xe[:, take] if take.size else Xe[:, :1]
             m = np.minimum(X2, 1.0 - X2)
             dmin = np.sqrt(np.sum(m * m, axis=1))
@@ -5526,7 +6111,12 @@ class DataTypical:
             W_norm = W / W_row_sum
             arch_wmax = W_norm.max(axis=1)
             _cleanup_memory(W_norm, W_row_sum)
-        
+
+        # v0.8.4: the training set's scales. 0.8.3 took the corner features,
+        # d95 and the stereotypical normaliser from the rows being scored, so
+        # transform() ranked a row differently with different company.
+        ref = self._transform_reference()
+
         X_euc = None
         if run_arch or run_proto:
             X_euc = X_scaled.toarray().astype(np.float64, copy=False) \
@@ -5546,14 +6136,18 @@ class DataTypical:
             best_euc = _euclidean_min_to_set_dense(X_euc, P_mat, max_memory_mb=self.max_memory_mb)
             _cleanup_memory(P_mat)
 
-            norm95 = np.percentile(best_euc, 95) or 1.0
+            if ref is not None and ref.get("d95") is not None:
+                norm95 = ref["d95"]
+            else:
+                norm95 = np.percentile(best_euc, 95) or 1.0
             proto_d_norm95 = np.clip(best_euc / norm95, 0.0, 1.0)
 
         # ---- Compute ranks
         if run_arch:
             # v0.8.3: the corner features are chosen by the helper the
             # archetypal explanation game also uses, so the two cannot drift.
-            take = _corner_feature_indices(X_euc)
+            # v0.8.4: through _corner_take, which applies corner_features.
+            take = self._corner_take(X_euc)
             X2 = X_euc[:, take] if take.size else X_euc[:, :1]
             m = np.minimum(X2, 1.0 - X2)
             dmin = np.sqrt(np.sum(m * m, axis=1))
@@ -5573,7 +6167,9 @@ class DataTypical:
         prototypical_score = (1.0 - proto_d_norm95) * 0.5 + best_cos * 0.5 \
             if run_proto else np.full(n_samples_transform, np.nan)
 
-        stereotypical_scores = self._compute_stereotypical_rank(X_scaled, index, stereotype_source) \
+        stereotypical_scores = self._compute_stereotypical_rank(
+            X_scaled, index, stereotype_source,
+            reference=ref.get("stereotype") if ref is not None else None) \
             if run_stereo else np.full(n_samples_transform, np.nan)
         
         # ---- Build output DataFrame (only keep rank columns)

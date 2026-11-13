@@ -400,7 +400,7 @@ class TestFittedGamesInTheFit:
     def test_the_configuration_round_trips(self):
         cfg = DataTypical(explanation_game="legacy").to_config()
         assert cfg["explanation_game"] == "legacy"
-        assert cfg["version"] == "0.8.3"
+        assert cfg["version"] == dtmod.__version__
         assert DataTypical.from_config(cfg).explanation_game == "legacy"
 
 
@@ -561,17 +561,26 @@ class TestTextStereotypeOnTransform:
             _quiet(dt.transform_text, docs)
 
     def test_and_are_ranked_by_it(self, fitted, corpus):
+        """
+        On the training scale (v0.8.4): the training years run 2010 to 2019
+        and the target is 'max'. Through 0.8.3 these three were ranked
+        against one another instead, as [0, 1, 9/19] for 2001, 2020, 2010.
+        """
         dt, _ = fitted
-        meta = pd.DataFrame({"Year": [2001.0, 2020.0, 2010.0]})
+        meta = pd.DataFrame({"Year": [2010.0, 2019.0, 2014.5]})
         out = _quiet(dt.transform_text, corpus[:3], text_metadata=meta)
-        np.testing.assert_allclose(out["stereotypical_rank"].to_numpy(), [0.0, 1.0, 9 / 19])
+        np.testing.assert_allclose(out["stereotypical_rank"].to_numpy(), [0.0, 1.0, 0.5])
+        meta = pd.DataFrame({"Year": [2001.0, 2020.0, 2010.0]})
+        with pytest.warns(RuntimeWarning, match="outside what the training rows spanned"):
+            out = dt.transform_text(corpus[:3], text_metadata=meta)
+        np.testing.assert_allclose(out["stereotypical_rank"].to_numpy(), [0.0, 1.0, 0.0])
 
     def test_through_the_unified_entry_point(self, fitted, corpus):
         dt, _ = fitted
         dt.fit(corpus, text_metadata=pd.DataFrame({"Year": np.arange(10.0)}))
         out = _quiet(dt.transform, corpus[:2],
                      text_metadata=pd.DataFrame({"Year": [5.0, 7.0]}))
-        np.testing.assert_allclose(out["stereotypical_rank"].to_numpy(), [0.0, 1.0])
+        np.testing.assert_allclose(out["stereotypical_rank"].to_numpy(), [5 / 9, 7 / 9])
 
     def test_the_metadata_is_checked(self, fitted, corpus):
         dt, _ = fitted

@@ -5,7 +5,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/datatypical.svg)](https://pypi.org/project/datatypical/)
-[![Tests](https://img.shields.io/badge/tests-981%20passing-21918c.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1040%20passing-21918c.svg)](tests/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-22a884.svg)](tests/)
 
 DataTypical analyzes datasets through three complementary lenses: archetypal (extreme), prototypical (representative), and stereotypical (target-like), with Shapley value explanations revealing why instances matter and which ones create your dataset's structure.
@@ -152,10 +152,11 @@ publication-mode fit samples nothing. Measured on an Intel Core Ultra 9 285K
 values and explanations for all three significance types. With both computed
 by permutation sampling instead (`'monte_carlo'`, 100 permutations, as through
 v0.7.7), the same 1,000-sample Shapley fit took 445 seconds, and 103 with
-`fast_mode`. These are v0.8.2 timings, and they stand for v0.8.3: its
-explanation games add a few milliseconds to an exact fit, and it no longer
-computes, and discards, a nearest-neighbour pass over all pairs of samples on
-every fit.
+`fast_mode`. These are v0.8.2 timings, and they stand for v0.8.3 and v0.8.4:
+0.8.3's explanation games add a few milliseconds to an exact fit, and it no
+longer computes, and discards, a nearest-neighbour pass over all pairs of
+samples on every fit; 0.8.4 adds one pass over the training rows at the end of
+a fit, to record the scales `transform()` uses.
 
 Of the Shapley computations, the prototypical formative values are the one
 that grows as n^2, so they come to dominate as n grows; the other formative
@@ -375,6 +376,19 @@ decompose its rank:
   the rank does (Spearman 0.99 to 1.00 on the paper's three datasets).
 - **Stereotypical.** Unchanged: the sample's distance from the target, as a
   weight, times the mean magnitude of its values over the coalition.
+
+**Two archetypal options (v0.8.4)**, both off by default. The corner term reads
+the two highest-variance features that span the scaled range, and logged
+counts with zeros often win that choice; a warning says when the chosen
+feature has very few distinct values. `corner_features='archetypes'` reads the
+two features on which the archetypes differ most instead, a list of one or two
+names fixes them, and `corner_features_` reports what was read. By default a
+feature is measured from the bottom of its scaled range, so one with a
+negative coefficient on the dominant archetype can contribute only zero or
+less; `archetypal_explanation_baseline='mean'` measures from the training mean,
+and the attributions then sum to `archetypal_rank` minus
+`archetypal_explanation_base_`. Neither option changes a weight or a
+formative value, and the baseline changes no rank.
 
 **Since v0.8.2 all three are exact by default** (`explanation_method='exact'`):
 each has a closed form, verified against exhaustive coalition enumeration, so
@@ -672,7 +686,7 @@ If you use DataTypical in your research, please cite:
   title = {DataTypical: Scientific Data Significance Rankings with Shapley Explanations},
   year = {2026},
   url = {https://github.com/amaxiom/DataTypical},
-  version = {0.8.3}
+  version = {0.8.4}
 }
 ```
 
@@ -705,9 +719,36 @@ This dual perspective transforms instance significance from pure ranking into ca
 
 ## Development Status
 
-**Current Version**: 0.8.3
+**Current Version**: 0.8.4
 
-**Recent Updates (v0.8.3)**, see [CHANGELOG.md](CHANGELOG.md):
+**Recent Updates (v0.8.4)**, see [CHANGELOG.md](CHANGELOG.md):
+- **`transform()` scores each row on the training set's scales.** Through
+  0.8.3 it took three of them from the rows it was given: the corner features
+  of the archetypal score, the prototype distance scale d95, and the
+  stereotypical rank's target and largest distance. A row's ranks depended on
+  which other rows were in the call, and a row transformed on its own always
+  ranked 0.0 on stereotypicality (1.0 for a `'max'` or `'min'` target). The
+  fit now records the training set's scales. **`fit_transform()` is unchanged
+  to the bit**; what changes is `transform()` on new rows or on part of the
+  training set. A fit saved before 0.8.4 is scored the old way, with a
+  warning. New rows that lack a stereotype column held out of the features are
+  now scored too, with a NaN `stereotypical_rank`.
+- **Two opt-in options for the archetypal score**, both defaulting to 0.8.3's
+  behaviour. `corner_features` chooses the features the corner term reads
+  (`'archetypes'` for those on which the archetypes differ most, or one or two
+  names), and `archetypal_explanation_baseline='mean'` measures the archetypal
+  explanations from the training mean, so a below-average value on a feature
+  with a negative coefficient can contribute positively. A warning names a
+  corner feature the default rule picks with very few distinct values, such
+  as a logged count with zeros. See
+  [Feature-level explanations](#feature-level-explanations).
+- pytest suite: 1040 tests, 100% statement coverage of both modules, measured
+  with `NUMBA_DISABLE_JIT=1` because compiled kernels are invisible to the line
+  tracer. `tests/conftest.py` sets that whenever coverage is measuring, so the
+  figure cannot be taken the other way by accident; with the JIT active the
+  same suite reports 96.4%. It passes on NumPy 1.26.4 and NumPy 2.5.4.
+
+**v0.8.3**, see [CHANGELOG.md](CHANGELOG.md):
 - **The archetypal and prototypical explanations now decompose the ranks they
   explain.** Their games are the significance scores with the fitted
   archetypes and prototypes held fixed (new `explanation_game`, default
@@ -725,11 +766,6 @@ This dual perspective transforms instance significance from pure ranking into ca
   NaN, with a warning. Text transforms now scale new documents by the training
   corpus and take `text_metadata=` for them. Fixes from a pre-release audit,
   none of which changes a `fit_transform()` result; see the CHANGELOG.
-- pytest suite: 981 tests, 100% statement coverage of both modules, measured
-  with `NUMBA_DISABLE_JIT=1` because compiled kernels are invisible to the line
-  tracer. `tests/conftest.py` sets that whenever coverage is measuring, so the
-  figure cannot be taken the other way by accident; with the JIT active the
-  same suite reports 96.1%.
 
 **v0.8.2**, see [CHANGELOG.md](CHANGELOG.md):
 - **Fixed an import that could hang.** From a folder the user cannot write to,

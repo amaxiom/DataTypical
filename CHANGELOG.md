@@ -7,6 +7,111 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [0.8.4] - 2026-11-12
+
+`transform()` now scores every row on the training set's scales, and two
+opt-in options are added for the archetypal score and its explanations. **No
+`fit_transform()` result changes**: with the defaults every rank, weight,
+archetype, explanation and formative value of a fit is bit for bit what 0.8.3
+gives (`tests/test_v084.py` compares the two modules on seven configurations
+and a text corpus). What changes is `transform()` on new rows, or on part of
+the training set.
+
+### Fixed
+
+- **`transform()` ranked a row by the company it kept.** It took three scales
+  from the rows it was given rather than from the training set: the two corner
+  features of the archetypal score (the default rule's choice), the prototype
+  distance scale d95 (the 95th percentile of the distances to the nearest
+  prototype), and the stereotypical rank's target (for `'max'` and `'min'`)
+  and largest distance from it. A row's ranks therefore depended on which
+  other rows were in the call. Scored on its own, a row's stereotypical rank
+  was 0.0 for a numeric target and 1.0 for `'max'` or `'min'` whatever its
+  value, the distance half of its prototypical rank was zero, and the corner
+  term read the first two features. On the Wine data, scoring each row on its
+  own moved `archetypal_rank` by up to 0.12 and `prototypical_rank` by up to
+  0.29, and a batch of ten moved the stereotypical rank by up to 0.46; on an
+  ovarian cancer cohort, scoring ten patients on their own moved the first two
+  by up to 0.056 and 0.134. The fit now records the three scales, computed
+  from the training rows as `transform()` prepares them, and `transform()`
+  uses them. Transforming the training set itself gives exactly what it gave
+  before, which is why `fit_transform()` does not move.
+  - A stereotype value outside the training span is bounded: one farther from
+    the target than any training row ranks 0.0, one beyond a `'max'` or
+    `'min'` target ranks 1.0, as the training extreme does, and a warning
+    counts them.
+  - A fit saved before 0.8.4 recorded no scales. It is scored the 0.8.3 way,
+    with a warning; refit to score rows independently.
+  - Under the NMF backend the membership weights come from scikit-learn's
+    `NMF.transform`, which solves a batch to `tol_nmf`, so there
+    `archetypal_rank` agrees across batches to about 1e-5 rather than exactly.
+- **`transform()` refused new rows that lack a stereotype column held out of
+  the features**, a label that is often unknown for new samples. Their
+  `stereotypical_rank` is now NaN, with a warning, and the other two ranks,
+  which never read it, are computed.
+
+### Added
+
+- **`corner_features`** chooses the features the archetypal score's corner
+  term reads. `None` (default) keeps the 0.8.3 rule, the two highest-variance
+  features that span the scaled range, chosen on the training rows.
+  `'archetypes'` reads the two features on which the fitted archetypes differ
+  most (largest variance of `H_` over archetypes), and a list of one or two
+  feature names, or positions among the fitted features, fixes them. Only
+  `archetypal_rank` and the archetypal explanations move; the weights, the
+  other ranks and the formative values do not (the prototype selection moves
+  too under `disallow_overlap`, which reads the corner score). The features
+  read are reported in `corner_features_` under every setting.
+- **`archetypal_explanation_baseline`** chooses where the fitted archetypal
+  explanation game measures each feature from. `'minimum'` (default) is the
+  0.8.3 game, which measures from the bottom of each feature's scaled range,
+  so a feature with a negative projection coefficient on the sample's
+  dominant archetype can contribute only zero or less however far below
+  average it is. `'mean'` measures from the training mean: the membership
+  terms become `0.7 (x_f - mu_f) c_f` with the score's own coefficients, the
+  corner term a two-player game with absent features at the mean, and the
+  values sum to `archetypal_rank` minus a per-sample base value kept in
+  `archetypal_explanation_base_`. No rank changes. It needs
+  `explanation_game='fitted'` and `explanation_method='exact'`.
+- `exact_explanations_archetypal_fitted` takes `baseline=` and
+  `return_base=`; without them it is the 0.8.3 function.
+
+### Changed
+
+- **A warning when the default corner rule picks a coarsely recorded
+  feature**: fewer than 20 distinct values, or than half the rows on small
+  data; text fits are not warned. Logged counts with zeros win the default
+  choice on the gap below their smallest positive value, and the corner term
+  then reads how a count is recorded. On an ovarian cancer cohort the rule
+  picks two blood-count columns with 30 and 12 distinct values, which carry a
+  median 25% of each patient's archetypal explanation. Of the DataTypical
+  paper's configurations it fires on MUTAG (`N_Count`, 4 values) and on
+  BIOSSES analysed as a term frame (the word weight of "this", 13 values), and
+  not on Wine, CASP, MAGIC or Shuttle. It changes no number.
+
+### Documentation
+
+- The membership behind `archetypal_rank` is the least-squares projection
+  onto the archetypes, not `W_`, the archetypal analysis's own coefficients;
+  on the Wine data the dominant archetype differs for 35 of 178 samples. The
+  Computation Guide says so, with the corner features and the new options.
+- `nmf_rank` and `n_prototypes`: neither default is a recommendation,
+  `archetypal_rank` is not comparable across numbers of archetypes, and
+  `prototypical_rank` moves with the number of prototypes.
+- The guides' `transform()` workflows say how new rows are now scored.
+
+### Tests
+
+The suite has 1040 tests, 100% statement coverage of both modules with
+`NUMBA_DISABLE_JIT=1` (96.4% with the JIT on), and passes on NumPy 1.26.4
+and NumPy 2.5.4. `tests/test_v084.py` is new. Its parity tests compare every
+default `fit_transform()` output with the released 0.8.3 module when
+`DATATYPICAL_083_MODULE` names a copy of it, and are skipped otherwise. Two
+`tests/test_v083.py` tests now state the 0.8.4 rule for ranking new documents
+on a stereotype column: on the training scale, not against one another.
+
+---
+
 ## [0.8.3] - 2026-10-26
 
 The archetypal and prototypical feature-level explanations now play games

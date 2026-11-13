@@ -1,5 +1,5 @@
 """
-DataTypical v0.8.3 - Visualization Module
+DataTypical v0.8.4 - Visualization Module
 ========================================
 
 Publication-quality visualizations for dual-perspective analysis:

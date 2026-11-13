@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the DataTypical v0.8.3 tests: the pytest suite, which is the release gate, and the five older script suites covering unit testing, data modality detection, performance scaling, visualization, and end-to-end benchmarking.
+This document describes the DataTypical v0.8.4 tests: the pytest suite, which is the release gate, and the five older script suites covering unit testing, data modality detection, performance scaling, visualization, and end-to-end benchmarking.
 
 **Script suites:** 70 tests across 5 suites, 3-5 minutes in all  
 **pytest suite:** see the next section  
@@ -12,7 +12,7 @@ This document describes the DataTypical v0.8.3 tests: the pytest suite, which is
 
 ## The pytest suite (added in v0.8.0)
 
-This is the layer to run routinely, and it is the release gate: 981 tests,
+This is the layer to run routinely, and it is the release gate: 1040 tests,
 100% statement coverage of both modules (measured as described under
 [Coverage](#coverage)), about two minutes end to end.
 
@@ -27,6 +27,7 @@ separately, as described further down.
 
 | module | what it covers |
 | --- | --- |
+| `test_v084.py` | everything new or fixed in v0.8.4: `transform()` on the training set's scales (a row scored alone, in a batch and in the whole set gets the same ranks, on tabular and text fits), stereotype values beyond the training span, a fit saved before 0.8.4, `corner_features` and `archetypal_explanation_baseline` against their exact formulas, and bit-for-bit parity of every default `fit_transform()` output with the released 0.8.3 module (set `DATATYPICAL_083_MODULE` to a copy saved as `datatypical_083.py`; without one those tests are skipped) |
 | `test_v083.py` | everything new or fixed in v0.8.3: the explanation games on the fitted model against enumeration and against the ranks they decompose, `explanation_game='legacy'`, and the pre-release audit's fixes (formative ranks on `transform()`, text transforms, formative attributions, the `converged` flag, density weighting, and the heatmap's rows of zeros) |
 | `test_v082.py` | everything new or fixed in v0.8.2: the Numba guard and NumPy fallback, the cache probe, exact explanations against enumeration, the stereotypical halves agreeing, early stopping, and the visualisations on every fit type, at every size, in the house style |
 | `test_v081_defects.py` | regression tests for the v0.8.1 fixes |
@@ -62,10 +63,10 @@ kernels run as machine code and the line tracer cannot see them. Since v0.8.2
 `tests/conftest.py` sets `NUMBA_DISABLE_JIT=1` itself whenever coverage is
 measuring, so the commands above always give the published convention; an
 explicit `NUMBA_DISABLE_JIT` in the environment wins. With the JIT on, the same
-suite reports 96.1%.
+suite reports 96.4%.
 
 Before a release the suite also runs on both NumPy majors (see
-`pypi_staging/BUILD_INSTRUCTIONS.md`). For v0.8.3 it passed on NumPy 1.26.4
+`pypi_staging/BUILD_INSTRUCTIONS.md`). For v0.8.4 it passed on NumPy 1.26.4
 (Python 3.12) and on NumPy 2.5.4 (Python 3.13), each in a fresh environment
 holding the newest release of every other dependency that it allowed.
 
@@ -802,8 +803,9 @@ shapley_n_permutations=100  # Thorough
 
 | DataTypical Version | Test Suite Version | Notes |
 |--------------------|--------------------|-------|
-| v0.8.3 | Current | All tests pass |
-| v0.8.2 | Previous | `test_v083.py` pins the 0.8.3 changes |
+| v0.8.4 | Current | All tests pass |
+| v0.8.3 | Previous | `test_v084.py` pins the 0.8.4 changes |
+| v0.8.2 | Older | `test_v083.py` pins the 0.8.3 changes |
 | v0.7.x | Script suites only | The pytest suite starts at v0.8.0 |
 | v0.6.x | Backward compatible | Unit tests verify v0.6 behavior |
 | v0.5.x | Partial | Autodetection not available |
@@ -921,6 +923,12 @@ Steps to Reproduce:
 
 ## Changelog
 
+### v0.8.4 (2026-11-12)
+- pytest suite: 1040 tests, 100% statement coverage with the JIT off, 96.4% on;
+  `test_v084.py` added, and two `test_v083.py` tests now state the 0.8.4 rule
+  for ranking new documents (on the training scale, not against one another)
+- Passes on NumPy 1.26.4 and NumPy 2.5.4
+
 ### v0.8.3 (2026-10-26)
 - pytest suite: 981 tests, 100% statement coverage with the JIT off, 96.1% on;
   `test_v083.py` added
@@ -953,6 +961,6 @@ This test suite is part of DataTypical and is distributed under the same MIT Lic
 
 ---
 
-**Last Updated:** October 26, 2026  
-**Test Suite Version:** 0.8.3  
-**DataTypical Version:** 0.8.3
+**Last Updated:** November 12, 2026  
+**Test Suite Version:** 0.8.4  
+**DataTypical Version:** 0.8.4
